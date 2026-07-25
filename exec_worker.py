@@ -24,6 +24,7 @@ e2b.dev call is a drop-in upgrade later — you don't have to redesign anything.
 import sys
 import json
 import resource
+import builtins as _builtins_module
 
 # ---- 1. Resource limits (Linux/macOS only, no-op on Windows) ----
 try:
@@ -52,7 +53,7 @@ def _restricted_import(name, *args, **kwargs):
 def build_safe_globals():
     safe_builtins = {
         k: v
-        for k, v in __builtins__.items()
+        for k, v in vars(_builtins_module).items()
         if k not in ("open", "exec", "eval", "compile", "input", "__import__", "exit", "quit")
     }
     safe_builtins["__import__"] = _restricted_import
