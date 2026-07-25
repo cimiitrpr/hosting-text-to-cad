@@ -44,7 +44,10 @@ except Exception:
     pass  # e.g. running on Windows during local dev
 
 # ---- 2. Restricted import allow-list ----
-ALLOWED_MODULES = {"cadquery", "math", "cadquery.selectors", "cadquery.occ_impl", "OCP"}
+ALLOWED_MODULES = {
+    "cadquery", "math", "cadquery.selectors", "cadquery.occ_impl", "OCP",
+    "cad_primitives",
+}
 
 _real_import = __import__
 

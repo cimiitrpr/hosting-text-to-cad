@@ -1,20 +1,31 @@
 """
-CIM Text-to-CAD Backend (v2)
+CIM Text-to-CAD Backend (v3)
 ============================
-Changes vs. your original main.py:
+Changes vs. v2:
 
-1. STEP export added (SolidWorks/AutoCAD-openable), STL kept only as the
-   in-browser preview format.
-2. Code execution moved out-of-process into exec_worker.py (subprocess +
-   timeout + restricted builtins) instead of exec() in the API process.
-3. Session-based chat: each session remembers its last *working* code, so
-   "now add a hole" edits the previous part instead of starting over. A bad
-   edit never overwrites the last good state.
-4. /upload_step: lets a user upload an existing STEP file (e.g. a chassis
-   they made in SolidWorks) and keep editing it via prompts.
-5. LLM provider is pluggable (Gemini and/or Grok/xAI) behind one function,
-   so you can switch or fall back between them without touching the rest
-   of the code.
+1. SYSTEM_RULES now exposes ALL six cad_primitives helpers (was missing
+   make_wheel_mount, safe_union, make_bolt) and explicitly tells the model
+   to use safe_union() instead of raw .union(), and make_bolt() instead of
+   hand-writing thread/helix geometry.
+2. SYSTEM_RULES documents the .cylinder()/.box() centering gotcha so the
+   model stops generating disconnected parts that "silently union" into
+   broken compounds.
+3. call_llm() (Gemini branch) now catches 429 rate-limit errors and returns
+   a clear 429 to the frontend instead of an opaque 500.
+4. /upload_step now streams the upload with a size cap (MAX_STEP_UPLOAD_BYTES)
+   instead of loading unbounded files straight into OCCT's STEP importer,
+   which is what was producing the "cannot allocate memory for thread-local
+   data: ABORT" crash on large files.
+
+NOTE: this file alone does not fix the "from cad_primitives import *"
+ImportError — that fix lives in exec_worker.py:
+
+    ALLOWED_MODULES = {
+        "cadquery", "math", "cadquery.selectors", "cadquery.occ_impl", "OCP",
+        "cad_primitives",
+    }
+
+Make sure exec_worker.py is updated alongside this file.
 
 Env vars you need to set before running:
     GEMINI_API_KEY   - if using Gemini
@@ -39,7 +50,14 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(APP_DIR, "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-app = FastAPI(title="CIM Club Text-to-CAD Core v2")
+# Max size for user-uploaded STEP files. OCCT's STEP importer can spike
+# memory well beyond the file's on-disk size, and large uploads were
+# crashing the worker with "cannot allocate memory for thread-local data:
+# ABORT" (a container/RAM ceiling being hit, not something catchable in
+# Python). Tune this to headroom on your actual hosting plan.
+MAX_STEP_UPLOAD_BYTES = 15 * 1024 * 1024  # 15MB
+
+app = FastAPI(title="CIM Club Text-to-CAD Core v3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -78,21 +96,39 @@ engineering CAD generator built on CadQuery.
 RULES:
 1. Return ONLY pure, executable Python code. No markdown fences, no commentary.
 2. Always import cadquery as: import cadquery as cq
-3. You may also `from cad_primitives import *` to use these pre-tested helpers
-   for anything beyond a single basic shape:
+3. You may also `from cad_primitives import *` to use these pre-tested helpers.
+   ALWAYS prefer these over freehand geometry — they are tested and avoid
+   common failure modes:
      - make_beam(length, width, height, origin=(0,0,0))
      - make_rail(length, width, height, hole_spacing=None, hole_diameter=6)
      - add_crossmember(base, length, width, height, x_position)
      - bolt_pattern_holes(workplane, diameter, positions)
-   Prefer these over freehand low-level geometry for multi-part assemblies
-   like chassis, brackets, or anything with repeated structural members.
-4. The final solid MUST be assigned to a global variable named 'result'.
-5. Do not call show_object() or any exporter inside the script.
-6. You are editing an ongoing part across a conversation. If previous code is
+     - make_wheel_mount(diameter, width, position)  # position=(x,y,z)
+     - make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_head=True)
+       -> use this for ANY screw/bolt/threaded-fastener request instead of
+          writing your own Wire.makeHelix() call. Do not hand-write helix
+          or thread geometry under any circumstances — it is fragile and
+          version-sensitive.
+     - safe_union(base, addition)
+       -> ALWAYS use safe_union(a, b) instead of a.union(b) when fusing two
+          parts. Raw .union() on two solids that don't actually touch or
+          overlap silently returns a broken multi-solid compound instead of
+          raising an error, which produces disconnected-looking parts.
+4. If you must use cq.Workplane(...).cylinder(height, radius) or .box(...)
+   directly (only for cases not covered by a primitive above), remember
+   these are CENTERED on the workplane by default — they extrude height/2
+   in each direction from the plane, not upward from z=0. Pass
+   centered=(True, True, False) if you need the base anchored at the
+   workplane instead of straddling it. Getting this wrong is a common
+   cause of two parts that look "stacked" in a prompt but don't actually
+   touch in the generated geometry.
+5. The final solid MUST be assigned to a global variable named 'result'.
+6. Do not call show_object() or any exporter inside the script.
+7. You are editing an ongoing part across a conversation. If previous code is
    given to you below, treat it as the current state of the model and modify
    it according to the newest instruction rather than starting from scratch,
    unless the user clearly asks for something unrelated.
-7. If the user uploaded a base STEP file, the first line of the script will
+8. If the user uploaded a base STEP file, the first line of the script will
    already be provided for you as a fixed prefix that imports it into
    `result` — build on top of that variable, don't redefine `result` from
    scratch in that case.
@@ -114,18 +150,30 @@ def call_llm(system_prompt: str, conversation_text: str) -> str:
     if provider == "gemini":
         from google import genai
         from google.genai import types
+        from google.genai.errors import ClientError
 
         client = genai.Client()  # reads GEMINI_API_KEY from env
         model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-        response = client.models.generate_content(
-            model=model_name,
-            contents=conversation_text,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.0,
-            ),
-        )
-        return response.text.strip()
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=conversation_text,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.0,
+                ),
+            )
+            return response.text.strip()
+        except ClientError as e:
+            if getattr(e, "code", None) == 429:
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        "Gemini free-tier rate limit hit — wait a minute (RPM cap) "
+                        "or until midnight PT (daily cap) and try again."
+                    ),
+                )
+            raise
 
     elif provider == "grok":
         # xAI exposes an OpenAI-compatible endpoint, so we reuse the openai client.
@@ -216,7 +264,6 @@ async def chat(request: ChatRequest):
 
     prefix_note = ""
     if session["base_step_path"]:
-        rel = os.path.relpath(session["base_step_path"], APP_DIR)
         prefix_note = (
             f"\nNOTE: The user uploaded a starting STEP file. Begin your script with:\n"
             f'result = cq.importers.importStep(r"{session["base_step_path"]}")\n'
@@ -256,13 +303,35 @@ async def upload_step(session_id: Optional[str] = Form(None), file: UploadFile =
     """
     Lets a user upload a STEP file (e.g. a chassis they built in SolidWorks)
     to use as the starting point for further prompt-driven edits.
+
+    Streams the upload in chunks and rejects anything over
+    MAX_STEP_UPLOAD_BYTES before it ever reaches the OCCT importer, since
+    large STEP files were crashing the worker with an OOM-style abort.
     """
     session_id, session = get_session(session_id)
 
     saved_name = f"upload_{uuid.uuid4().hex[:8]}_{file.filename}"
     saved_path = os.path.join(OUTPUT_DIR, saved_name)
+
+    size = 0
     with open(saved_path, "wb") as out:
-        shutil.copyfileobj(file.file, out)
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_STEP_UPLOAD_BYTES:
+                out.close()
+                os.remove(saved_path)
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"STEP file too large ({size // (1024 * 1024)}MB). "
+                        f"Importing files this size can exceed available worker RAM. "
+                        f"Max allowed is {MAX_STEP_UPLOAD_BYTES // (1024 * 1024)}MB on the current plan."
+                    ),
+                )
+            out.write(chunk)
 
     session["base_step_path"] = saved_path
     session["last_code"] = None  # force next /chat call to rebuild from this base
