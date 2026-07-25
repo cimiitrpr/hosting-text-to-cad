@@ -31,8 +31,15 @@ try:
     # Max 35 seconds of CPU time for the generated script itself (complex
     # multi-part assemblies with several boolean unions can be genuinely slow)
     resource.setrlimit(resource.RLIMIT_CPU, (35, 35))
-    # Max ~1GB of address space, so a runaway script can't OOM the host
-    resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
+    # NOTE: we intentionally do NOT set RLIMIT_AS (virtual address space) here.
+    # CAD kernels like OCCT/OCP reserve large virtual memory regions up front
+    # even for modest actual (resident) memory use, and STEP import in
+    # particular is heavier than generating a primitive shape. A tight
+    # RLIMIT_AS causes glibc to hard-abort with a cryptic
+    # "cannot allocate memory for thread-local data" error well before real
+    # physical memory is exhausted. Real memory protection is better left to
+    # the hosting platform's container-level limit (e.g. Render kills the
+    # process cleanly with an OOM signal instead of this glibc abort).
 except Exception:
     pass  # e.g. running on Windows during local dev
 
