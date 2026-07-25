@@ -43,7 +43,7 @@ app = FastAPI(title="CIM Club Text-to-CAD Core v2")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # e.g. ["https://cim-text-to-cad.vercel.app"] once you have your real Vercel URL
+    allow_origins=["*"],  # tighten to your real Vercel domain before going public
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -84,9 +84,6 @@ RULES:
      - make_rail(length, width, height, hole_spacing=None, hole_diameter=6)
      - add_crossmember(base, length, width, height, x_position)
      - bolt_pattern_holes(workplane, diameter, positions)
-     - make_wheel_mount(diameter, width, position=(x,y,z))
-     - safe_union(base, addition)  -- prefer this over base.union(addition) directly;
-       it raises a clear error if the parts don't actually touch/overlap
    Prefer these over freehand low-level geometry for multi-part assemblies
    like chassis, brackets, or anything with repeated structural members.
 4. The final solid MUST be assigned to a global variable named 'result'.
@@ -111,77 +108,46 @@ def call_llm(system_prompt: str, conversation_text: str) -> str:
     """
     Single entry point for talking to whichever LLM backs this deployment.
     Swap providers via the LLM_PROVIDER env var without touching callers.
-
-    Retries a couple of times on transient server-side errors (e.g. Gemini's
-    503 "high demand" response) with a short backoff, since these resolve on
-    their own within seconds and shouldn't be treated the same as a genuine
-    bug in the generated code.
     """
-    import time
-
     provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
-    LLM_RETRY_ATTEMPTS = 3
-    LLM_RETRY_DELAY_SECONDS = 3
 
-    last_exception = None
-    for attempt in range(LLM_RETRY_ATTEMPTS):
-        try:
-            if provider == "gemini":
-                from google import genai
-                from google.genai import types
+    if provider == "gemini":
+        from google import genai
+        from google.genai import types
 
-                client = genai.Client()  # reads GEMINI_API_KEY from env
-                model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=conversation_text,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        temperature=0.0,
-                    ),
-                )
-                return response.text.strip()
+        client = genai.Client()  # reads GEMINI_API_KEY from env
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        response = client.models.generate_content(
+            model=model_name,
+            contents=conversation_text,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.0,
+            ),
+        )
+        return response.text.strip()
 
-            elif provider == "grok":
-                # xAI exposes an OpenAI-compatible endpoint, so we reuse the openai client.
-                from openai import OpenAI
+    elif provider == "grok":
+        # xAI exposes an OpenAI-compatible endpoint, so we reuse the openai client.
+        from openai import OpenAI
 
-                client = OpenAI(
-                    api_key=os.environ["XAI_API_KEY"],
-                    base_url="https://api.x.ai/v1",
-                )
-                model_name = os.environ.get("GROK_MODEL", "grok-4")  # check xAI docs for current model id
-                completion = client.chat.completions.create(
-                    model=model_name,
-                    temperature=0.0,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": conversation_text},
-                    ],
-                )
-                return completion.choices[0].message.content.strip()
+        client = OpenAI(
+            api_key=os.environ["XAI_API_KEY"],
+            base_url="https://api.x.ai/v1",
+        )
+        model_name = os.environ.get("GROK_MODEL", "grok-4")  # check xAI docs for current model id
+        completion = client.chat.completions.create(
+            model=model_name,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": conversation_text},
+            ],
+        )
+        return completion.choices[0].message.content.strip()
 
-            else:
-                raise HTTPException(status_code=500, detail=f"Unknown LLM_PROVIDER '{provider}'")
-
-        except HTTPException:
-            raise  # don't retry on config errors like an unknown provider
-        except Exception as e:
-            last_exception = e
-            error_text = str(e).lower()
-            is_transient = any(
-                marker in error_text
-                for marker in ("503", "unavailable", "overloaded", "high demand", "rate limit", "429")
-            )
-            if is_transient and attempt < LLM_RETRY_ATTEMPTS - 1:
-                time.sleep(LLM_RETRY_DELAY_SECONDS)
-                continue
-            raise HTTPException(
-                status_code=502,
-                detail=f"LLM provider ({provider}) request failed: {e}",
-            )
-
-    raise HTTPException(status_code=502, detail=f"LLM provider ({provider}) failed after retries: {last_exception}")
+    else:
+        raise HTTPException(status_code=500, detail=f"Unknown LLM_PROVIDER '{provider}'")
 
 
 def strip_code_fences(text: str) -> str:
@@ -220,10 +186,10 @@ def run_sandboxed(code: str) -> tuple[bool, str, str, str]:
             env=proc_env,
             capture_output=True,
             text=True,
-            timeout=40,
+            timeout=20,
         )
     except subprocess.TimeoutExpired:
-        return False, "Generated script timed out after 40 seconds (likely an infinite loop or an extremely heavy boolean operation).", "", ""
+        return False, "Generated script timed out after 20 seconds (likely an infinite loop or huge boolean operation).", "", ""
 
     try:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
@@ -267,36 +233,11 @@ async def chat(request: ChatRequest):
 
     ok, error, stl_path, step_path = run_sandboxed(code)
 
-    # Self-correction loop: complex prompts (assemblies, chassis, etc.) are
-    # far more likely to have a bug on the first try than a single primitive.
-    # Instead of failing immediately, hand the actual Python error back to
-    # the model and ask it to fix its own code. This is the single biggest
-    # reliability win for anything beyond basic shapes.
-    MAX_FIX_ATTEMPTS = 2
-    attempt = 0
-    while not ok and attempt < MAX_FIX_ATTEMPTS:
-        attempt += 1
-        fix_prompt = (
-            f"{conversation_text}\n\n"
-            f"The script you just wrote failed to execute with this error:\n{error}\n\n"
-            f"Here is the exact script that failed:\n{code}\n\n"
-            f"Fix the bug and return the complete corrected script. "
-            f"Follow all the same rules as before."
-        )
-        raw_code = call_llm(SYSTEM_RULES, fix_prompt)
-        code = strip_code_fences(raw_code)
-        ok, error, stl_path, step_path = run_sandboxed(code)
-
     if not ok:
         # Do NOT overwrite session["last_code"] — keep the last good state
         # so the next prompt still has something valid to build on.
-        session["history"].append(
-            {"role": "assistant", "content": f"[FAILED after {attempt + 1} attempts] {error}"}
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model tried {attempt + 1} time(s) and couldn't produce working code. Last error: {error}",
-        )
+        session["history"].append({"role": "assistant", "content": f"[FAILED] {error}"})
+        raise HTTPException(status_code=400, detail=error)
 
     session["last_code"] = code
     session["history"].append({"role": "assistant", "content": "[OK] model updated"})
@@ -343,5 +284,4 @@ async def upload_step(session_id: Optional[str] = Form(None), file: UploadFile =
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.environ.get("PORT", 8000))  # Render/Railway inject PORT; falls back to 8000 locally
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
