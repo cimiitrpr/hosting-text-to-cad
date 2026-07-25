@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 cadquery==2.4.0
+numpy<2.0
 google-genai
 openai
 python-multipart
