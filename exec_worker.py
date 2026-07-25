@@ -23,14 +23,22 @@ e2b.dev call is a drop-in upgrade later — you don't have to redesign anything.
 
 import sys
 import json
-import resource
 import builtins as _builtins_module
+
+# `resource` is Unix-only (Linux/macOS). It does not exist on Windows, so
+# import it defensively — this is what lets local dev on Windows run this
+# file at all, while still applying the real CPU limit on Render (Linux).
+try:
+    import resource
+except ImportError:
+    resource = None
 
 # ---- 1. Resource limits (Linux/macOS only, no-op on Windows) ----
 try:
-    # Max 35 seconds of CPU time for the generated script itself (complex
-    # multi-part assemblies with several boolean unions can be genuinely slow)
-    resource.setrlimit(resource.RLIMIT_CPU, (35, 35))
+    if resource is not None:
+        # Max 35 seconds of CPU time for the generated script itself (complex
+        # multi-part assemblies with several boolean unions can be genuinely slow)
+        resource.setrlimit(resource.RLIMIT_CPU, (35, 35))
     # NOTE: we intentionally do NOT set RLIMIT_AS (virtual address space) here.
     # CAD kernels like OCCT/OCP reserve large virtual memory regions up front
     # even for modest actual (resident) memory use, and STEP import in
@@ -41,7 +49,7 @@ try:
     # the hosting platform's container-level limit (e.g. Render kills the
     # process cleanly with an OOM signal instead of this glibc abort).
 except Exception:
-    pass  # e.g. running on Windows during local dev
+    pass  # belt-and-braces — setrlimit can still fail for other reasons
 
 # ---- 2. Restricted import allow-list ----
 ALLOWED_MODULES = {
