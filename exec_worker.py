@@ -28,8 +28,9 @@ import builtins as _builtins_module
 
 # ---- 1. Resource limits (Linux/macOS only, no-op on Windows) ----
 try:
-    # Max 10 seconds of CPU time for the generated script itself
-    resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
+    # Max 35 seconds of CPU time for the generated script itself (complex
+    # multi-part assemblies with several boolean unions can be genuinely slow)
+    resource.setrlimit(resource.RLIMIT_CPU, (35, 35))
     # Max ~1GB of address space, so a runaway script can't OOM the host
     resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
 except Exception:

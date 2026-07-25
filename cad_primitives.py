@@ -64,3 +64,32 @@ def bolt_pattern_holes(workplane, diameter, positions):
     for x, y in positions:
         workplane = workplane.moveTo(x, y).hole(diameter)
     return workplane
+
+
+def make_wheel_mount(diameter, width, position):
+    """
+    A cylindrical wheel/axle mount, oriented along the Y axis, placed at
+    `position` = (x, y, z). Useful for chassis/vehicle-style builds.
+    """
+    x, y, z = position
+    return (
+        cq.Workplane("YZ")
+        .center(y, z)
+        .workplane(offset=x)
+        .circle(diameter / 2)
+        .extrude(width)
+    )
+
+
+def safe_union(base, addition):
+    """
+    Union two solids, raising a clear error instead of a cryptic OCC failure
+    if the parts don't actually intersect or touch (a common mistake when
+    positioning cross-members or mounts).
+    """
+    try:
+        return base.union(addition)
+    except Exception as e:
+        raise ValueError(
+            f"Union failed — the two parts likely don't touch or overlap. Original error: {e}"
+        )
