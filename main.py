@@ -111,46 +111,77 @@ def call_llm(system_prompt: str, conversation_text: str) -> str:
     """
     Single entry point for talking to whichever LLM backs this deployment.
     Swap providers via the LLM_PROVIDER env var without touching callers.
+
+    Retries a couple of times on transient server-side errors (e.g. Gemini's
+    503 "high demand" response) with a short backoff, since these resolve on
+    their own within seconds and shouldn't be treated the same as a genuine
+    bug in the generated code.
     """
+    import time
+
     provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
+    LLM_RETRY_ATTEMPTS = 3
+    LLM_RETRY_DELAY_SECONDS = 3
 
-    if provider == "gemini":
-        from google import genai
-        from google.genai import types
+    last_exception = None
+    for attempt in range(LLM_RETRY_ATTEMPTS):
+        try:
+            if provider == "gemini":
+                from google import genai
+                from google.genai import types
 
-        client = genai.Client()  # reads GEMINI_API_KEY from env
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-        response = client.models.generate_content(
-            model=model_name,
-            contents=conversation_text,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.0,
-            ),
-        )
-        return response.text.strip()
+                client = genai.Client()  # reads GEMINI_API_KEY from env
+                model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=conversation_text,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.0,
+                    ),
+                )
+                return response.text.strip()
 
-    elif provider == "grok":
-        # xAI exposes an OpenAI-compatible endpoint, so we reuse the openai client.
-        from openai import OpenAI
+            elif provider == "grok":
+                # xAI exposes an OpenAI-compatible endpoint, so we reuse the openai client.
+                from openai import OpenAI
 
-        client = OpenAI(
-            api_key=os.environ["XAI_API_KEY"],
-            base_url="https://api.x.ai/v1",
-        )
-        model_name = os.environ.get("GROK_MODEL", "grok-4")  # check xAI docs for current model id
-        completion = client.chat.completions.create(
-            model=model_name,
-            temperature=0.0,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": conversation_text},
-            ],
-        )
-        return completion.choices[0].message.content.strip()
+                client = OpenAI(
+                    api_key=os.environ["XAI_API_KEY"],
+                    base_url="https://api.x.ai/v1",
+                )
+                model_name = os.environ.get("GROK_MODEL", "grok-4")  # check xAI docs for current model id
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    temperature=0.0,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": conversation_text},
+                    ],
+                )
+                return completion.choices[0].message.content.strip()
 
-    else:
-        raise HTTPException(status_code=500, detail=f"Unknown LLM_PROVIDER '{provider}'")
+            else:
+                raise HTTPException(status_code=500, detail=f"Unknown LLM_PROVIDER '{provider}'")
+
+        except HTTPException:
+            raise  # don't retry on config errors like an unknown provider
+        except Exception as e:
+            last_exception = e
+            error_text = str(e).lower()
+            is_transient = any(
+                marker in error_text
+                for marker in ("503", "unavailable", "overloaded", "high demand", "rate limit", "429")
+            )
+            if is_transient and attempt < LLM_RETRY_ATTEMPTS - 1:
+                time.sleep(LLM_RETRY_DELAY_SECONDS)
+                continue
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM provider ({provider}) request failed: {e}",
+            )
+
+    raise HTTPException(status_code=502, detail=f"LLM provider ({provider}) failed after retries: {last_exception}")
 
 
 def strip_code_fences(text: str) -> str:
