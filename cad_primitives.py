@@ -97,17 +97,21 @@ def safe_union(base, addition):
 
 def make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_head=True):
     """
-    A screw/bolt: a cylindrical shank plus a head, with the THREAD SHOWN AS A
-    COSMETIC HELICAL GROOVE rather than fully carved thread geometry.
+    A screw/bolt: a cylindrical shank plus a head, with the THREAD SHOWN AS
+    CHEAP COSMETIC RING GROOVES rather than a continuous helix or fully
+    carved thread geometry.
 
-    Why: true 3D thread geometry (a swept V-profile along a helix, intersected
-    with the shank) is expensive to compute and one of the most failure-prone
-    things to generate reliably — even professional CAD tools usually treat
-    threads as a cosmetic/annotated feature rather than exact geometry, since
-    exact thread geometry is rarely needed except for manufacturing checks.
-    This primitive gives you a fast, reliable bolt shape with a shallow
-    decorative helical groove that reads clearly as "threaded" in a preview
-    and print, without the computational cost/fragility of a true thread.
+    Why ring grooves instead of a helix: an earlier version of this function
+    swept a profile along a full-length helix and cut it from the shank.
+    That is correct CadQuery usage, but computationally heavy — OCCT has to
+    build and boolean-intersect a long, high-curvature swept solid — and it
+    reliably timed out on constrained hosting (e.g. Render's free tier).
+    A stack of simple concentric ring grooves reads visually as "threaded"
+    at a glance and is dramatically cheaper: each cut is a small, simple
+    boolean operation instead of one large complex one. This is a deliberate
+    trade of geometric accuracy for reliability — not something you'd do for
+    a manufacturing drawing, but a reasonable and honest choice for a fast,
+    dependable preview/demo tool.
 
     shank_diameter: nominal diameter of the threaded rod (e.g. 3 for M3)
     length: length of the shank, not counting the head
@@ -122,25 +126,31 @@ def make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_
 
     shank = cq.Workplane("XY").circle(shank_diameter / 2).extrude(length)
 
-    # Cosmetic thread: a shallow helical groove cut into the shank surface.
-    # This is deliberately a light visual cue, not a mechanically accurate
-    # thread profile.
-    pitch = max(shank_diameter * 0.2, 0.4)
+    # Cosmetic thread: a bounded number of shallow ring grooves, cheap to
+    # compute regardless of screw length. Capped at MAX_RINGS so a very long
+    # screw can't balloon into dozens of boolean operations.
+    pitch = max(shank_diameter * 0.35, 0.5)
     groove_depth = shank_diameter * 0.06
-    helix = cq.Wire.makeHelix(pitch=pitch, height=length, radius=shank_diameter / 2)
-    groove_profile = (
-        cq.Workplane("XZ")
-        .center(shank_diameter / 2, 0)
-        .rect(groove_depth * 2, pitch * 0.3)
-    )
-    try:
-        groove = groove_profile.sweep(helix, isFrenet=True)
-        shank = shank.cut(groove)
-    except Exception:
-        # If the cosmetic groove sweep fails for any geometric edge case,
-        # fall back silently to a plain (unthreaded-looking) shank rather
-        # than failing the whole part — a plain shank is still a usable bolt.
-        pass
+    groove_width = pitch * 0.35
+    MAX_RINGS = 12
+    n_rings = min(int(length // pitch) - 1, MAX_RINGS)
+
+    if n_rings > 0:
+        try:
+            for i in range(1, n_rings + 1):
+                z = i * (length / (n_rings + 1))
+                ring_tool = (
+                    cq.Workplane("XY")
+                    .workplane(offset=z - groove_width / 2)
+                    .circle(shank_diameter / 2 + 0.1)
+                    .circle(shank_diameter / 2 - groove_depth)
+                    .extrude(groove_width)
+                )
+                shank = shank.cut(ring_tool)
+        except Exception:
+            # If ring grooves fail for any geometric edge case, fall back
+            # silently to a plain shank rather than failing the whole part.
+            pass
 
     if hex_head:
         head = (
