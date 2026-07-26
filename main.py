@@ -1,31 +1,20 @@
 """
-CIM Text-to-CAD Backend (v3)
+CIM Text-to-CAD Backend (v2)
 ============================
-Changes vs. v2:
+Changes vs. your original main.py:
 
-1. SYSTEM_RULES now exposes ALL six cad_primitives helpers (was missing
-   make_wheel_mount, safe_union, make_bolt) and explicitly tells the model
-   to use safe_union() instead of raw .union(), and make_bolt() instead of
-   hand-writing thread/helix geometry.
-2. SYSTEM_RULES documents the .cylinder()/.box() centering gotcha so the
-   model stops generating disconnected parts that "silently union" into
-   broken compounds.
-3. call_llm() (Gemini branch) now catches 429 rate-limit errors and returns
-   a clear 429 to the frontend instead of an opaque 500.
-4. /upload_step now streams the upload with a size cap (MAX_STEP_UPLOAD_BYTES)
-   instead of loading unbounded files straight into OCCT's STEP importer,
-   which is what was producing the "cannot allocate memory for thread-local
-   data: ABORT" crash on large files.
-
-NOTE: this file alone does not fix the "from cad_primitives import *"
-ImportError — that fix lives in exec_worker.py:
-
-    ALLOWED_MODULES = {
-        "cadquery", "math", "cadquery.selectors", "cadquery.occ_impl", "OCP",
-        "cad_primitives",
-    }
-
-Make sure exec_worker.py is updated alongside this file.
+1. STEP export added (SolidWorks/AutoCAD-openable), STL kept only as the
+   in-browser preview format.
+2. Code execution moved out-of-process into exec_worker.py (subprocess +
+   timeout + restricted builtins) instead of exec() in the API process.
+3. Session-based chat: each session remembers its last *working* code, so
+   "now add a hole" edits the previous part instead of starting over. A bad
+   edit never overwrites the last good state.
+4. /upload_step: lets a user upload an existing STEP file (e.g. a chassis
+   they made in SolidWorks) and keep editing it via prompts.
+5. LLM provider is pluggable (Gemini and/or Grok/xAI) behind one function,
+   so you can switch or fall back between them without touching the rest
+   of the code.
 
 Env vars you need to set before running:
     GEMINI_API_KEY   - if using Gemini
@@ -50,18 +39,11 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(APP_DIR, "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Max size for user-uploaded STEP files. OCCT's STEP importer can spike
-# memory well beyond the file's on-disk size, and large uploads were
-# crashing the worker with "cannot allocate memory for thread-local data:
-# ABORT" (a container/RAM ceiling being hit, not something catchable in
-# Python). Tune this to headroom on your actual hosting plan.
-MAX_STEP_UPLOAD_BYTES = 15 * 1024 * 1024  # 15MB
-
-app = FastAPI(title="CIM Club Text-to-CAD Core v3")
+app = FastAPI(title="CIM Club Text-to-CAD Core v2")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten to your real Vercel domain before going public
+    allow_origins=["*"],  # e.g. ["https://cim-text-to-cad.vercel.app"] once you have your real Vercel URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -96,42 +78,40 @@ engineering CAD generator built on CadQuery.
 RULES:
 1. Return ONLY pure, executable Python code. No markdown fences, no commentary.
 2. Always import cadquery as: import cadquery as cq
-3. You may also `from cad_primitives import *` to use these pre-tested helpers.
-   ALWAYS prefer these over freehand geometry — they are tested and avoid
-   common failure modes:
+3. You may also `from cad_primitives import *` to use these pre-tested helpers
+   for anything beyond a single basic shape:
      - make_beam(length, width, height, origin=(0,0,0))
      - make_rail(length, width, height, hole_spacing=None, hole_diameter=6)
      - add_crossmember(base, length, width, height, x_position)
      - bolt_pattern_holes(workplane, diameter, positions)
-     - make_wheel_mount(diameter, width, position)  # position=(x,y,z)
+     - make_wheel_mount(diameter, width, position=(x,y,z))
+     - safe_union(base, addition)  -- prefer this over base.union(addition) directly;
+       it raises a clear error if the parts don't actually touch/overlap
      - make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_head=True)
-       -> use this for ANY screw/bolt/threaded-fastener request instead of
-          writing your own Wire.makeHelix() call. Do not hand-write helix
-          or thread geometry under any circumstances — it is fragile and
-          version-sensitive.
-     - safe_union(base, addition)
-       -> ALWAYS use safe_union(a, b) instead of a.union(b) when fusing two
-          parts. Raw .union() on two solids that don't actually touch or
-          overlap silently returns a broken multi-solid compound instead of
-          raising an error, which produces disconnected-looking parts.
-4. If you must use cq.Workplane(...).cylinder(height, radius) or .box(...)
-   directly (only for cases not covered by a primitive above), remember
-   these are CENTERED on the workplane by default — they extrude height/2
-   in each direction from the plane, not upward from z=0. Pass
-   centered=(True, True, False) if you need the base anchored at the
-   workplane instead of straddling it. Getting this wrong is a common
-   cause of two parts that look "stacked" in a prompt but don't actually
-   touch in the generated geometry.
-5. The final solid MUST be assigned to a global variable named 'result'.
-6. Do not call show_object() or any exporter inside the script.
-7. You are editing an ongoing part across a conversation. If previous code is
+       -- use this for ANY screw/bolt/threaded-fastener request. It returns a
+       complete bolt with a cosmetic thread groove. Do NOT hand-write helix/
+       thread sweep code yourself; it is expensive and error-prone. If the
+       user gives a metric size like "M3", pass shank_diameter=3.
+     - make_l_bracket(leg1_length, leg2_length, width, thickness, hole_diameter=None, hole_inset=None)
+       -- use this for ANY angle bracket / L-bracket request instead of
+       hand-deriving polyline points yourself.
+   Prefer these over freehand low-level geometry for multi-part assemblies
+   like chassis, brackets, or anything with repeated structural members.
+4. The final solid MUST be assigned to a global variable named 'result'.
+5. Do not call show_object() or any exporter inside the script.
+6. You are editing an ongoing part across a conversation. If previous code is
    given to you below, treat it as the current state of the model and modify
-   it according to the newest instruction rather than starting from scratch,
-   unless the user clearly asks for something unrelated.
-8. If the user uploaded a base STEP file, the first line of the script will
+   it according to the newest instruction rather than starting from scratch —
+   UNLESS a rule below tells you to rewrite using a specific primitive
+   instead, in which case follow that instruction over the previous code.
+7. If the user uploaded a base STEP file, the first line of the script will
    already be provided for you as a fixed prefix that imports it into
    `result` — build on top of that variable, don't redefine `result` from
    scratch in that case.
+8. If you ever must use cq.Wire.makeHelix directly for something make_bolt
+   doesn't cover, its real signature is:
+   Wire.makeHelix(pitch, height, radius, center=(0,0,0), dir=(0,0,1), angle=360.0, lefthand=False)
+   There is NO 'clockwise' argument — use 'lefthand' (True/False) instead.
 """
 
 
@@ -144,58 +124,77 @@ def call_llm(system_prompt: str, conversation_text: str) -> str:
     """
     Single entry point for talking to whichever LLM backs this deployment.
     Swap providers via the LLM_PROVIDER env var without touching callers.
+
+    Retries a couple of times on transient server-side errors (e.g. Gemini's
+    503 "high demand" response) with a short backoff, since these resolve on
+    their own within seconds and shouldn't be treated the same as a genuine
+    bug in the generated code.
     """
+    import time
+
     provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
+    LLM_RETRY_ATTEMPTS = 3
+    LLM_RETRY_DELAY_SECONDS = 3
 
-    if provider == "gemini":
-        from google import genai
-        from google.genai import types
-        from google.genai.errors import ClientError
-
-        client = genai.Client()  # reads GEMINI_API_KEY from env
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    last_exception = None
+    for attempt in range(LLM_RETRY_ATTEMPTS):
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=conversation_text,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=0.0,
-                ),
-            )
-            return response.text.strip()
-        except ClientError as e:
-            if getattr(e, "code", None) == 429:
-                raise HTTPException(
-                    status_code=429,
-                    detail=(
-                        "Gemini free-tier rate limit hit — wait a minute (RPM cap) "
-                        "or until midnight PT (daily cap) and try again."
+            if provider == "gemini":
+                from google import genai
+                from google.genai import types
+
+                client = genai.Client()  # reads GEMINI_API_KEY from env
+                model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=conversation_text,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.0,
                     ),
                 )
-            raise
+                return response.text.strip()
 
-    elif provider == "grok":
-        # xAI exposes an OpenAI-compatible endpoint, so we reuse the openai client.
-        from openai import OpenAI
+            elif provider == "grok":
+                # xAI exposes an OpenAI-compatible endpoint, so we reuse the openai client.
+                from openai import OpenAI
 
-        client = OpenAI(
-            api_key=os.environ["XAI_API_KEY"],
-            base_url="https://api.x.ai/v1",
-        )
-        model_name = os.environ.get("GROK_MODEL", "grok-4")  # check xAI docs for current model id
-        completion = client.chat.completions.create(
-            model=model_name,
-            temperature=0.0,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": conversation_text},
-            ],
-        )
-        return completion.choices[0].message.content.strip()
+                client = OpenAI(
+                    api_key=os.environ["XAI_API_KEY"],
+                    base_url="https://api.x.ai/v1",
+                )
+                model_name = os.environ.get("GROK_MODEL", "grok-4")  # check xAI docs for current model id
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    temperature=0.0,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": conversation_text},
+                    ],
+                )
+                return completion.choices[0].message.content.strip()
 
-    else:
-        raise HTTPException(status_code=500, detail=f"Unknown LLM_PROVIDER '{provider}'")
+            else:
+                raise HTTPException(status_code=500, detail=f"Unknown LLM_PROVIDER '{provider}'")
+
+        except HTTPException:
+            raise  # don't retry on config errors like an unknown provider
+        except Exception as e:
+            last_exception = e
+            error_text = str(e).lower()
+            is_transient = any(
+                marker in error_text
+                for marker in ("503", "unavailable", "overloaded", "high demand", "rate limit", "429")
+            )
+            if is_transient and attempt < LLM_RETRY_ATTEMPTS - 1:
+                time.sleep(LLM_RETRY_DELAY_SECONDS)
+                continue
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM provider ({provider}) request failed: {e}",
+            )
+
+    raise HTTPException(status_code=502, detail=f"LLM provider ({provider}) failed after retries: {last_exception}")
 
 
 def strip_code_fences(text: str) -> str:
@@ -208,6 +207,49 @@ def strip_code_fences(text: str) -> str:
             lines = lines[:-1]
         text = "\n".join(lines)
     return text.strip()
+
+
+# Keywords that should force the model toward specific pre-tested primitives
+# instead of trusting it to remember the system prompt's rules on its own.
+# System-prompt instructions are "soft" — a model can and does drift from
+# them, especially several turns into a conversation. A targeted, per-message
+# reminder injected right next to the user's actual request is much stickier
+# than a rule buried in a long system prompt from turn one.
+_KEYWORD_REINFORCEMENTS = {
+    ("screw", "bolt", "thread", "fastener", "m2", "m3", "m4", "m5", "m6", "m8"): (
+        "\nIMPORTANT: This request involves a screw/bolt/threaded fastener. "
+        "IGNORE any previous script shown above and rewrite the part from "
+        "scratch by calling make_bolt(...) from cad_primitives — do NOT "
+        "write your own cylinder+head code, do NOT try to patch/edit "
+        "previous freehand code, and do NOT write any helix/thread sweep "
+        "code by hand. Map any metric size like 'M3' to shank_diameter=3. "
+        "Re-use any dimensions (length, head size, etc.) mentioned earlier "
+        "in the conversation if the newest message doesn't repeat them."
+    ),
+    ("chassis", "frame", "rail"): (
+        "\nIMPORTANT: This request involves a structural frame/chassis. "
+        "Prefer make_rail(...) and add_crossmember(...) from cad_primitives "
+        "over freehand box positioning for the structural members."
+    ),
+    ("angle bracket", "l-bracket", "l bracket", "bracket"): (
+        "\nIMPORTANT: This request involves an angle/L-bracket. You MUST call "
+        "make_l_bracket(leg1_length, leg2_length, width, thickness, hole_diameter=None, hole_inset=None) "
+        "from cad_primitives for this — do NOT hand-write polyline coordinates "
+        "for the L-shape yourself, it is very easy to get the point order "
+        "wrong and produce a solid block with a notch instead of two thin legs."
+    ),
+}
+
+
+def reinforce_prompt_for_keywords(user_message: str) -> str:
+    """Returns extra system-style guidance to append if the message matches
+    known trouble spots, or an empty string otherwise."""
+    lowered = user_message.lower()
+    extra = ""
+    for keywords, reminder in _KEYWORD_REINFORCEMENTS.items():
+        if any(kw in lowered for kw in keywords):
+            extra += reminder
+    return extra
 
 
 def run_sandboxed(code: str) -> tuple[bool, str, str, str]:
@@ -234,10 +276,10 @@ def run_sandboxed(code: str) -> tuple[bool, str, str, str]:
             env=proc_env,
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=40,
         )
     except subprocess.TimeoutExpired:
-        return False, "Generated script timed out after 20 seconds (likely an infinite loop or huge boolean operation).", "", ""
+        return False, "Generated script timed out after 40 seconds (likely an infinite loop or an extremely heavy boolean operation).", "", ""
 
     try:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
@@ -264,6 +306,7 @@ async def chat(request: ChatRequest):
 
     prefix_note = ""
     if session["base_step_path"]:
+        rel = os.path.relpath(session["base_step_path"], APP_DIR)
         prefix_note = (
             f"\nNOTE: The user uploaded a starting STEP file. Begin your script with:\n"
             f'result = cq.importers.importStep(r"{session["base_step_path"]}")\n'
@@ -273,18 +316,43 @@ async def chat(request: ChatRequest):
     if session["last_code"]:
         convo_lines.append(f"CURRENT WORKING SCRIPT:\n{session['last_code']}")
 
-    conversation_text = "\n".join(convo_lines) + prefix_note
+    conversation_text = "\n".join(convo_lines) + prefix_note + reinforce_prompt_for_keywords(request.message)
 
     raw_code = call_llm(SYSTEM_RULES, conversation_text)
     code = strip_code_fences(raw_code)
 
     ok, error, stl_path, step_path = run_sandboxed(code)
 
+    # Self-correction loop: complex prompts (assemblies, chassis, etc.) are
+    # far more likely to have a bug on the first try than a single primitive.
+    # Instead of failing immediately, hand the actual Python error back to
+    # the model and ask it to fix its own code. This is the single biggest
+    # reliability win for anything beyond basic shapes.
+    MAX_FIX_ATTEMPTS = 2
+    attempt = 0
+    while not ok and attempt < MAX_FIX_ATTEMPTS:
+        attempt += 1
+        fix_prompt = (
+            f"{conversation_text}\n\n"
+            f"The script you just wrote failed to execute with this error:\n{error}\n\n"
+            f"Here is the exact script that failed:\n{code}\n\n"
+            f"Fix the bug and return the complete corrected script. "
+            f"Follow all the same rules as before."
+        )
+        raw_code = call_llm(SYSTEM_RULES, fix_prompt)
+        code = strip_code_fences(raw_code)
+        ok, error, stl_path, step_path = run_sandboxed(code)
+
     if not ok:
         # Do NOT overwrite session["last_code"] — keep the last good state
         # so the next prompt still has something valid to build on.
-        session["history"].append({"role": "assistant", "content": f"[FAILED] {error}"})
-        raise HTTPException(status_code=400, detail=error)
+        session["history"].append(
+            {"role": "assistant", "content": f"[FAILED after {attempt + 1} attempts] {error}"}
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model tried {attempt + 1} time(s) and couldn't produce working code. Last error: {error}",
+        )
 
     session["last_code"] = code
     session["history"].append({"role": "assistant", "content": "[OK] model updated"})
@@ -303,35 +371,13 @@ async def upload_step(session_id: Optional[str] = Form(None), file: UploadFile =
     """
     Lets a user upload a STEP file (e.g. a chassis they built in SolidWorks)
     to use as the starting point for further prompt-driven edits.
-
-    Streams the upload in chunks and rejects anything over
-    MAX_STEP_UPLOAD_BYTES before it ever reaches the OCCT importer, since
-    large STEP files were crashing the worker with an OOM-style abort.
     """
     session_id, session = get_session(session_id)
 
     saved_name = f"upload_{uuid.uuid4().hex[:8]}_{file.filename}"
     saved_path = os.path.join(OUTPUT_DIR, saved_name)
-
-    size = 0
     with open(saved_path, "wb") as out:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > MAX_STEP_UPLOAD_BYTES:
-                out.close()
-                os.remove(saved_path)
-                raise HTTPException(
-                    status_code=413,
-                    detail=(
-                        f"STEP file too large ({size // (1024 * 1024)}MB). "
-                        f"Importing files this size can exceed available worker RAM. "
-                        f"Max allowed is {MAX_STEP_UPLOAD_BYTES // (1024 * 1024)}MB on the current plan."
-                    ),
-                )
-            out.write(chunk)
+        shutil.copyfileobj(file.file, out)
 
     session["base_step_path"] = saved_path
     session["last_code"] = None  # force next /chat call to rebuild from this base
@@ -353,4 +399,5 @@ async def upload_step(session_id: Optional[str] = Form(None), file: UploadFile =
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))  # Render/Railway inject PORT; falls back to 8000 locally
+    uvicorn.run(app, host="0.0.0.0", port=port)

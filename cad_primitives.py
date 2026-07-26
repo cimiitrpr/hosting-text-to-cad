@@ -158,3 +158,48 @@ def make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_
         )
 
     return shank.union(head)
+
+
+def make_l_bracket(leg1_length, leg2_length, width, thickness, hole_diameter=None, hole_inset=None):
+    """
+    An L-shaped angle bracket: two perpendicular legs of a solid cross-section,
+    extruded along `width`. Optionally drills a mounting hole in each leg.
+
+    leg1_length, leg2_length: outer length of each leg (measured from the
+        outer corner, including the shared thickness)
+    width: extrusion depth (how "deep"/long the bracket is along the bend line)
+    thickness: material thickness of both legs
+    hole_diameter: if given, drills one hole through each leg's face
+    hole_inset: distance of each hole's center from the outer corner along
+        its leg (defaults to half the thickness in from the leg's midpoint area
+        if not given — kept simple/central by default)
+    """
+    pts = [
+        (0, leg1_length),
+        (thickness, leg1_length),
+        (thickness, thickness),
+        (leg2_length, thickness),
+        (leg2_length, 0),
+        (0, 0),
+    ]
+    profile = cq.Workplane("XY").polyline(pts).close()
+    result = profile.extrude(width)
+
+    if hole_diameter:
+        if hole_inset is None:
+            hole_inset = thickness * 1.5
+        # Extrusion is along Z, so the flat top face (">Z") shares the same
+        # X/Y coordinate space as the 2D profile above — hole positions can
+        # be given directly in those same profile coordinates.
+        hole_positions = [
+            (thickness / 2, leg1_length - hole_inset),  # hole through the vertical leg
+            (leg2_length - hole_inset, thickness / 2),  # hole through the horizontal leg
+        ]
+        result = (
+            result.faces(">Z")
+            .workplane()
+            .pushPoints(hole_positions)
+            .hole(hole_diameter)
+        )
+
+    return result
