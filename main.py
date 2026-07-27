@@ -133,6 +133,13 @@ RULES:
        -- CRITICAL: pass origin=(0, 0, wall_height) using the EXACT SAME
        wall_height number used for the walls, or the roof will float above
        the house with a visible gap instead of sitting flush on top.
+       - make_wall(length, height, thickness, origin=(0,0,0), axis="x"|"y")
+       -- origin is the wall's STARTING CORNER, not its center. The wall
+       extends `length` in the +axis direction and `thickness` in the
+       positive perpendicular direction from that corner.
+     - cut_opening(wall, width, height, position, origin, axis)
+       -- position=(along_wall, from_ground) is measured from the SAME
+       corner/axis you passed to make_wall for that wall.
 """
 
 

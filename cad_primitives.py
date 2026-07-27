@@ -245,42 +245,44 @@ def make_lego_brick(studs_x, studs_y, height="standard"):
 
 def make_wall(length, height, thickness, origin=(0, 0, 0), axis="x"):
     """
-    A flat rectangular wall panel, standing vertically (extends up in Z),
-    base at `origin`. `axis` picks which horizontal direction `length` runs
-    along ("x" or "y") — this swaps the box() dimensions directly rather
-    than rotating, so walls facing either direction stay perfectly upright
-    with no risk of a rotation transform going wrong.
+    origin = the wall's STARTING CORNER (not its center). The wall extends
+    length units in the +axis direction and thickness units in the positive
+    perpendicular direction from there. E.g. axis="x", origin=(0,0,0),
+    length=4, thickness=0.2 creates a wall spanning x:[0,4], y:[0,0.2].
     """
     x, y, z = origin
-    wp = cq.Workplane("XY").center(x, y).workplane(offset=z)
     if axis == "x":
-        return wp.box(length, thickness, height, centered=(True, True, False))
+        return (
+            cq.Workplane("XY")
+            .center(x + length / 2, y + thickness / 2)
+            .workplane(offset=z)
+            .box(length, thickness, height, centered=(True, True, False))
+        )
     elif axis == "y":
-        return wp.box(thickness, length, height, centered=(True, True, False))
+        return (
+            cq.Workplane("XY")
+            .center(x + thickness / 2, y + length / 2)
+            .workplane(offset=z)
+            .box(thickness, length, height, centered=(True, True, False))
+        )
     raise ValueError("axis must be 'x' or 'y'")
 
 
-def cut_opening(wall, width, height, position, wall_axis="x"):
+def cut_opening(wall, width, height, position, origin=(0, 0, 0), axis="x"):
     """
-    Cuts a rectangular door/window opening through a wall made with
-    make_wall(). `position` = (along_wall, from_ground) — along_wall is
-    measured from the wall's center along its length, from_ground is
-    height from the wall's base (z=0 of that wall). wall_axis matches
-    whichever axis the wall's `length` runs along ("x" or "y") so the
-    cutting tool is oriented correctly for walls facing either direction.
+    position = (along_wall, from_ground) measured from the wall's STARTING
+    CORNER (same origin/axis you passed to make_wall) — NOT from its center.
     """
     along, from_ground = position
-    tool = cq.Workplane("XY").box(
-        width if wall_axis == "x" else 1000,
-        1000 if wall_axis == "x" else width,
-        height,
-        centered=(True, True, False),
-    )
-    tool = tool.translate((along if wall_axis == "x" else 0,
-                           0 if wall_axis == "x" else along,
-                           from_ground))
-    return safe_union.__wrapped__(wall, tool) if False else wall.cut(tool)
-
+    x0, y0, z0 = origin
+    z = z0 + from_ground + height / 2
+    if axis == "x":
+        cx = x0 + along
+        tool = cq.Workplane("XY").center(cx, y0).workplane(offset=z).box(width, 1000, height, centered=(True, True, True))
+    else:
+        cy = y0 + along
+        tool = cq.Workplane("XY").center(x0, cy).workplane(offset=z).box(1000, width, height, centered=(True, True, True))
+    return wall.cut(tool)
 
 def make_pitched_roof(base_length, base_width, ridge_height, overhang=0, origin=(0, 0, 0)):
     """
@@ -325,21 +327,3 @@ def make_box_room(length, width, height, thickness):
     left  = make_wall(width - 2 * thickness, height, thickness, origin=(-length / 2 + thickness / 2, 0, 0), axis="y")
     right = make_wall(width - 2 * thickness, height, thickness, origin=( length / 2 - thickness / 2, 0, 0), axis="y")
     return front.union(back).union(left).union(right)
-
-
-def cut_opening(wall, width, height, position, origin=(0, 0, 0), axis="x"):
-    """
-    Cuts a door/window opening through a wall made with make_wall(). Pass
-    the SAME origin and axis you used for make_wall() so the cut lines up.
-    position = (along_wall, from_ground): along_wall is offset from the
-    wall's center along its length; from_ground is height from the wall's
-    own base (origin's z).
-    """
-    along, from_ground = position
-    x0, y0, z0 = origin
-    z = z0 + from_ground + height / 2
-    if axis == "x":
-        tool = cq.Workplane("XY").center(x0 + along, y0).workplane(offset=z).box(width, 1000, height, centered=(True, True, True))
-    else:
-        tool = cq.Workplane("XY").center(x0, y0 + along).workplane(offset=z).box(1000, width, height, centered=(True, True, True))
-    return wall.cut(tool)
