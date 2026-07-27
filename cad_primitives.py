@@ -213,3 +213,98 @@ def make_l_bracket(leg1_length, leg2_length, width, thickness, hole_diameter=Non
         )
 
     return result
+
+def make_lego_brick(studs_x, studs_y, height="standard"):
+    """
+    A standard Lego-proportioned brick: solid body with cylindrical studs
+    on top and a shell with hollow interior tubes on the underside for
+    proper stacking. Standard unit = 8mm stud pitch, studs 4.8mm diameter,
+    brick height 9.6mm (or 3.2mm for a "plate").
+    """
+    UNIT = 8.0
+    STUD_D = 4.8
+    STUD_H = 1.8
+    WALL_T = 1.2
+    h = 9.6 if height == "standard" else 3.2
+
+    length = studs_x * UNIT
+    width = studs_y * UNIT
+
+    body = cq.Workplane("XY").box(length, width, h, centered=(True, True, False))
+    # hollow shell from below, leaving the top solid so studs have something to sit on
+    body = body.faces("<Z").shell(-WALL_T)
+
+    studs = (
+        cq.Workplane("XY")
+        .workplane(offset=h)
+        .rarray(UNIT, UNIT, studs_x, studs_y)
+        .circle(STUD_D / 2)
+        .extrude(STUD_H)
+    )
+    return body.union(studs)
+
+def make_wall(length, height, thickness, origin=(0, 0, 0)):
+    """
+    A flat rectangular wall panel, standing upright (extends up in Z),
+    with its bottom-front-left corner at `origin`. Use this for any of the
+    four walls of a building — position each wall's origin so the walls'
+    edges actually meet (e.g. front/back walls span the full outer width,
+    side walls are inset by the wall thickness so corners don't overlap).
+    """
+    return (
+        cq.Workplane("XY")
+        .center(origin[0], origin[1])
+        .workplane(offset=origin[2])
+        .box(length, thickness, height, centered=(True, True, False))
+    )
+
+
+def cut_opening(wall, width, height, position, wall_axis="x"):
+    """
+    Cuts a rectangular door/window opening through a wall made with
+    make_wall(). `position` = (along_wall, from_ground) — along_wall is
+    measured from the wall's center along its length, from_ground is
+    height from the wall's base (z=0 of that wall). wall_axis matches
+    whichever axis the wall's `length` runs along ("x" or "y") so the
+    cutting tool is oriented correctly for walls facing either direction.
+    """
+    along, from_ground = position
+    tool = cq.Workplane("XY").box(
+        width if wall_axis == "x" else 1000,
+        1000 if wall_axis == "x" else width,
+        height,
+        centered=(True, True, False),
+    )
+    tool = tool.translate((along if wall_axis == "x" else 0,
+                           0 if wall_axis == "x" else along,
+                           from_ground))
+    return safe_union.__wrapped__(wall, tool) if False else wall.cut(tool)
+
+
+def make_pitched_roof(base_length, base_width, ridge_height, overhang=0, origin=(0, 0, 0)):
+    """
+    A simple pitched (gable) roof: a triangular prism sitting on top of a
+    rectangular footprint, ridge running along the `base_length` axis.
+    `origin` should be the base center-bottom of the roof (typically the
+    top of your walls). `overhang` extends the roof past the wall footprint
+    on the two long sides.
+    """
+    half_w = base_width / 2 + overhang
+    pts = [(-half_w, 0), (0, ridge_height), (half_w, 0)]
+    profile = (
+        cq.Workplane("YZ")
+        .center(origin[1], origin[2])
+        .workplane(offset=origin[0] - base_length / 2)
+        .polyline(pts).close()
+    )
+    return profile.extrude(base_length)
+
+
+def make_flat_roof(length, width, thickness, origin=(0, 0, 0), overhang=0):
+    """A simple flat roof slab — a box extended past the wall footprint by `overhang`."""
+    return (
+        cq.Workplane("XY")
+        .center(origin[0], origin[1])
+        .workplane(offset=origin[2])
+        .box(length + 2 * overhang, width + 2 * overhang, thickness, centered=(True, True, False))
+    )

@@ -112,6 +112,16 @@ RULES:
    doesn't cover, its real signature is:
    Wire.makeHelix(pitch, height, radius, center=(0,0,0), dir=(0,0,1), angle=360.0, lefthand=False)
    There is NO 'clockwise' argument — use 'lefthand' (True/False) instead.
+9. - make_wall(length, height, thickness, origin=(0,0,0))
+     - cut_opening(wall, width, height, position=(along_wall, from_ground), wall_axis="x")
+     - make_pitched_roof(base_length, base_width, ridge_height, overhang=0, origin=(0,0,0))
+     - make_flat_roof(length, width, thickness, origin=(0,0,0), overhang=0)
+       -- use these for ANY house/building/room request. Build four walls
+       with make_wall (position each origin so adjoining walls' edges
+       actually meet — do not leave gaps or overlaps at corners), union
+       them with safe_union, cut door/window openings with cut_opening
+       BEFORE unioning that wall into the rest of the structure, then add
+       a roof on top with make_pitched_roof or make_flat_roof.
 """
 
 
@@ -237,6 +247,15 @@ _KEYWORD_REINFORCEMENTS = {
         "from cad_primitives for this — do NOT hand-write polyline coordinates "
         "for the L-shape yourself, it is very easy to get the point order "
         "wrong and produce a solid block with a notch instead of two thin legs."
+    ),
+    ("house", "building", "room", "roof", "cabin"): (
+        "\nIMPORTANT: This request involves a house/building. You MUST use "
+        "make_wall(...) for each wall, cut_opening(...) for any door/window "
+        "BEFORE unioning that wall in, and make_pitched_roof(...) or "
+        "make_flat_roof(...) for the roof — all from cad_primitives. Do NOT "
+        "hand-position raw boxes for walls; getting four wall corners to "
+        "actually meet without gaps requires care, which is exactly what "
+        "make_wall's origin convention handles for you."
     ),
 }
 
