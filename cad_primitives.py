@@ -243,20 +243,21 @@ def make_lego_brick(studs_x, studs_y, height="standard"):
     )
     return body.union(studs)
 
-def make_wall(length, height, thickness, origin=(0, 0, 0)):
+def make_wall(length, height, thickness, origin=(0, 0, 0), axis="x"):
     """
-    A flat rectangular wall panel, standing upright (extends up in Z),
-    with its bottom-front-left corner at `origin`. Use this for any of the
-    four walls of a building — position each wall's origin so the walls'
-    edges actually meet (e.g. front/back walls span the full outer width,
-    side walls are inset by the wall thickness so corners don't overlap).
+    A flat rectangular wall panel, standing vertically (extends up in Z),
+    base at `origin`. `axis` picks which horizontal direction `length` runs
+    along ("x" or "y") — this swaps the box() dimensions directly rather
+    than rotating, so walls facing either direction stay perfectly upright
+    with no risk of a rotation transform going wrong.
     """
-    return (
-        cq.Workplane("XY")
-        .center(origin[0], origin[1])
-        .workplane(offset=origin[2])
-        .box(length, thickness, height, centered=(True, True, False))
-    )
+    x, y, z = origin
+    wp = cq.Workplane("XY").center(x, y).workplane(offset=z)
+    if axis == "x":
+        return wp.box(length, thickness, height, centered=(True, True, False))
+    elif axis == "y":
+        return wp.box(thickness, length, height, centered=(True, True, False))
+    raise ValueError("axis must be 'x' or 'y'")
 
 
 def cut_opening(wall, width, height, position, wall_axis="x"):
@@ -308,3 +309,37 @@ def make_flat_roof(length, width, thickness, origin=(0, 0, 0), overhang=0):
         .workplane(offset=origin[2])
         .box(length + 2 * overhang, width + 2 * overhang, thickness, centered=(True, True, False))
     )
+
+def make_box_room(length, width, height, thickness):
+    """
+    Four walls forming a closed rectangular room centered at the origin,
+    corners guaranteed to meet exactly (side walls are pre-inset by
+    `thickness` so they don't overlap the front/back walls at the corners).
+    length runs along X, width along Y. Returns one unioned solid.
+    Use this for the standard "four walls of a house" case instead of
+    calling make_wall four times by hand — hand-deriving each wall's
+    origin is exactly what produced gaps/overlaps before.
+    """
+    front = make_wall(length, height, thickness, origin=(0, -width / 2 + thickness / 2, 0), axis="x")
+    back  = make_wall(length, height, thickness, origin=(0,  width / 2 - thickness / 2, 0), axis="x")
+    left  = make_wall(width - 2 * thickness, height, thickness, origin=(-length / 2 + thickness / 2, 0, 0), axis="y")
+    right = make_wall(width - 2 * thickness, height, thickness, origin=( length / 2 - thickness / 2, 0, 0), axis="y")
+    return front.union(back).union(left).union(right)
+
+
+def cut_opening(wall, width, height, position, origin=(0, 0, 0), axis="x"):
+    """
+    Cuts a door/window opening through a wall made with make_wall(). Pass
+    the SAME origin and axis you used for make_wall() so the cut lines up.
+    position = (along_wall, from_ground): along_wall is offset from the
+    wall's center along its length; from_ground is height from the wall's
+    own base (origin's z).
+    """
+    along, from_ground = position
+    x0, y0, z0 = origin
+    z = z0 + from_ground + height / 2
+    if axis == "x":
+        tool = cq.Workplane("XY").center(x0 + along, y0).workplane(offset=z).box(width, 1000, height, centered=(True, True, True))
+    else:
+        tool = cq.Workplane("XY").center(x0, y0 + along).workplane(offset=z).box(1000, width, height, centered=(True, True, True))
+    return wall.cut(tool)

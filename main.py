@@ -122,6 +122,17 @@ RULES:
        them with safe_union, cut door/window openings with cut_opening
        BEFORE unioning that wall into the rest of the structure, then add
        a roof on top with make_pitched_roof or make_flat_roof.
+       - make_box_room(length, width, height, thickness)
+       -- use this for the four walls of any house/room request instead of
+       positioning make_wall calls by hand. Cut door/window openings on an
+       individual wall (built separately via make_wall) BEFORE unioning it
+       into the room if a specific wall needs an opening.
+     - make_wall(length, height, thickness, origin=(0,0,0), axis="x"|"y")
+     - cut_opening(wall, width, height, position, origin=(0,0,0), axis="x"|"y")
+     - make_pitched_roof(...) / make_flat_roof(...)
+       -- CRITICAL: pass origin=(0, 0, wall_height) using the EXACT SAME
+       wall_height number used for the walls, or the roof will float above
+       the house with a visible gap instead of sitting flush on top.
 """
 
 
