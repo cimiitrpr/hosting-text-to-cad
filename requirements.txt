@@ -6,3 +6,4 @@ google-genai
 openai
 python-multipart
 langgraph==1.2.10
+python-dotenv

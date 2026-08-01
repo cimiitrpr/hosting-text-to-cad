@@ -113,7 +113,8 @@ Primitive catalog (all from cad_primitives, already importable as: from cad_prim
 - add_crossmember(base, length, width, height, x_position) — fuses a beam onto base
 - bolt_pattern_holes(workplane, diameter, positions) — holes at explicit (x, y)
 - make_wheel_mount(diameter, width, position=(x,y,z)) — cylindrical mount along Y
-- safe_union(base, addition) — union with a clear error if parts don't touch
+ - safe_union(*parts) — fuses ANY number of parts into one (safe_union(a, b) or safe_union(a, b, c, ...)); raises a clear error if consecutive parts don't touch
+- make_pin_grid(base, pins_x, pins_y, pin_size, pin_height, pitch) — fuses a centered grid of square cooling pins onto the TOP face of an existing base; use for ANY heatsink / pin-array / radiator request (e.g. 120mm plate with 12x12 pins -> pitch=10)
 - make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_head=True) — use for ANY screw/bolt request; metric size M3 -> shank_diameter=3
 - make_l_bracket(leg1_length, leg2_length, width, thickness, hole_diameter=None, hole_inset=None) — use for ANY angle/L bracket
 - make_wall(length, height, thickness, origin=(0,0,0), axis="x"|"y") — wall from a STARTING CORNER
@@ -144,7 +145,7 @@ Rules:
 1. Return ONLY executable CadQuery Python for the CURRENT sub-plan. No markdown fences, no commentary, no import statements (imports are added by the merge step; `import cadquery as cq` and `from cad_primitives import *` are already in scope).
 2. Define variables whose names match the plan's sub-plan ids/goals (e.g. rail_1, cross_beam, bracket_a).
 3. For the FINAL sub-plan: assign the finished part to a variable named `result`, built from the earlier variables (or from the existing `result` when editing).
-4. Use exactly the primitives chosen in the plan; do not hand-write low-level geometry that the plan assigns to a catalog primitive.
+4. Use exactly the primitives chosen in the plan; do not hand-write low-level geometry that the plan assigns to a catalog primitive. For arrays/grids of repeated geometry (pins, studs, hole arrays), use the dedicated helper in ONE call — never generate dozens of individual parts and manual unions.
 5. Do not call show_object() or any exporter.
 """
 
@@ -154,7 +155,8 @@ Rules:
 1. Return the COMPLETE corrected script (all sub-plan sections concatenated, in order). No markdown fences, no commentary, no import statements (imports are added by the merge step; `import cadquery as cq` and `from cad_primitives import *` are already in scope).
 2. The script must end by assigning the finished part to `result`.
 3. Fix the reported error while preserving the plan's intent.
-4. Do not call show_object() or any exporter.
+4. Note: safe_union(*parts) accepts ANY number of parts (safe_union(a, b, c, ...)) — passing many parts at once is fine and is NOT the bug.
+5. Do not call show_object() or any exporter.
 """
 
 # Per-message planner notes: targeted reminders that are stickier than rules
@@ -172,6 +174,11 @@ _PLANNER_NOTES = {
         "This involves an angle/L bracket: plan make_l_bracket(...) with hole_diameter/hole_inset "
         "rather than hand-written polylines."
     ),
+    ("heatsink", "cooling pin", "pin grid", "array of pins", "radiator", "fins"): (
+    "This is a heatsink/pin-array: plan a flat base plate plus ONE make_pin_grid(...) call "
+    "for all the pins (pitch = plate length / pins per side, e.g. 120mm plate with 12 pins "
+    "-> pitch=10). Do NOT plan individual pins or manual per-pin unions."
+),
     ("house", "building", "room", "roof", "cabin"): (
         "This is a building: plan make_box_room(...) or per-wall make_wall(...), cut_opening(...) "
         "for doors/windows BEFORE unioning each wall, then make_pitched_roof(...)/make_flat_roof(...) "

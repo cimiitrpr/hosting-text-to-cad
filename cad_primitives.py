@@ -81,18 +81,54 @@ def make_wheel_mount(diameter, width, position):
     )
 
 
-def safe_union(base, addition):
+def safe_union(*parts):
     """
-    Union two solids, raising a clear error instead of a cryptic OCC failure
-    if the parts don't actually intersect or touch (a common mistake when
-    positioning cross-members or mounts).
+     Fuse any number of solids into one, raising a clear error instead of a
+    cryptic OCC failure if consecutive parts don't actually intersect or
+    touch (a common mistake when positioning cross-members or mounts).
+    Accepts any number of parts: safe_union(a, b) or safe_union(a, b, c, ...).
     """
-    try:
-        return base.union(addition)
-    except Exception as e:
-        raise ValueError(
-            f"Union failed — the two parts likely don't touch or overlap. Original error: {e}"
-        )
+    if not parts:
+        raise ValueError("safe_union() requires at least one part.")
+    result = parts[0]
+    for addition in parts[1:]:
+        try:
+            result = result.union(addition)
+        except Exception as e:
+            raise ValueError(
+                f"Union failed — the parts likely don't touch or overlap. Original error: {e}"
+            )
+    return result
+
+def make_pin_grid(base, pins_x, pins_y, pin_size, pin_height, pitch):
+    """
+    Fuse a rectangular grid of square cooling pins onto the TOP face of an
+    existing base plate (heatsink-style). The grid is centered on the base.
+
+    base: existing part (e.g. a flat plate) to fuse pins onto
+    pins_x / pins_y: number of pins per row / column
+    pin_size: side length of each square pin
+    pin_height: pin height above the base's top face
+    pitch: center-to-center spacing between pins — plate length / pins per
+           side (e.g. a 120mm plate with 12 pins -> pitch=10)
+    """
+    bbox = base.val().BoundingBox()
+    top_z = bbox.zmax
+    cx = (bbox.xmin + bbox.xmax) / 2
+    cy = (bbox.ymin + bbox.ymax) / 2
+    x0 = cx - (pins_x - 1) * pitch / 2
+    y0 = cy - (pins_y - 1) * pitch / 2
+    result = base
+    for i in range(pins_x):
+        for j in range(pins_y):
+            pin = (
+                cq.Workplane("XY")
+                .center(x0 + i * pitch, y0 + j * pitch)
+                .workplane(offset=top_z)
+                .box(pin_size, pin_size, pin_height, centered=(True, True, False))
+            )
+            result = result.union(pin)
+    return result
 
 
 def make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_head=True):

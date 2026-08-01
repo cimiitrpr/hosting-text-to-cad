@@ -41,6 +41,8 @@ from pydantic import BaseModel
 
 from cad_workflow import OUTPUT_DIR, WORKFLOW, run_in_sandbox
 
+import gemini
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = FastAPI(title="CIM Club Text-to-CAD Core v4")
@@ -100,6 +102,8 @@ async def chat(request: ChatRequest):
                 "base_step_path": session["base_step_path"],
             }
         )
+    except gemini.QuotaExceededError as e:
+        raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM pipeline failed: {e}")
 
