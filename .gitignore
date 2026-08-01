@@ -1,0 +1,11 @@
+output/*.stl
+output/*.step
+output/script_*.py
+output/upload_*
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
