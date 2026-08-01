@@ -59,7 +59,7 @@
     //   2. ?backend=https://your-backend  query parameter
     //   3. same origin the page was served from (works when the backend
     //      also serves index.html)
-    window.APP_CONFIG = window.APP_CONFIG || {};
+    window.APP_CONFIG = { BACKEND_URL: "https://hosting-text-to-cad.onrender.com" };
     const BACKEND_URL = (window.APP_CONFIG.BACKEND_URL
         || new URLSearchParams(window.location.search).get('backend')
         || window.location.origin
