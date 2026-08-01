@@ -14,8 +14,8 @@ Why this exists:
     shrink the model's problem from "write correct low-level code" to
     "pick the right high-level calls and numbers."
 
-This file gets copied next to the generated script at execution time so
-`from cad_primitives import *` works inside the sandboxed subprocess.
+This file is imported inside the sandbox at execution time so
+`from cad_primitives import *` works for generated scripts.
 """
 
 import cadquery as cq

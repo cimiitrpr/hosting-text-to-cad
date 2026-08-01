@@ -5,3 +5,4 @@ numpy<2.0
 google-genai
 openai
 python-multipart
+langgraph==1.2.10

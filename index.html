@@ -54,8 +54,16 @@
     </div>
 
     <script>
-       const BACKEND_URL = "https://hosting-text-to-cad.onrender.com"; // change to your deployed backend URL
-
+       // Backend URL — no longer hardcoded. Resolution order:
+    //   1. window.APP_CONFIG.BACKEND_URL  (set in your deployment before this script)
+    //   2. ?backend=https://your-backend  query parameter
+    //   3. same origin the page was served from (works when the backend
+    //      also serves index.html)
+    window.APP_CONFIG = window.APP_CONFIG || {};
+    const BACKEND_URL = (window.APP_CONFIG.BACKEND_URL
+        || new URLSearchParams(window.location.search).get('backend')
+        || window.location.origin
+    ).replace(/\/+$/, '');
         let scene, camera, renderer, controls, currentMesh;
         const container = document.getElementById('canvasContainer');
         let sessionId = localStorage.getItem('cim_session_id') || null;
