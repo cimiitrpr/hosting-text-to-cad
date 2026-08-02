@@ -24,8 +24,10 @@ exec_worker.py was removed: sandbox execution now happens in-process with the
 same restricted builtins + import allow-list, guarded by a watchdog thread.
 
 Config (all optional, sensible defaults):
-    MAX_FIX_ATTEMPTS         - repair-loop cap, default: 2
-    SANDBOX_TIMEOUT_SECONDS  - watchdog timeout for generated code, default: 40
+    MAX_FIX_ATTEMPTS         - repair-loop cap, default: 0 (single trial per
+                               request — set higher to let the model fix its
+                               own code, at the cost of more API calls)
+    SANDBOX_TIMEOUT_SECONDS  - watchdog timeout for generated code, default: 60
     HISTORY_WINDOW           - conversation turns sent to the planner, default: 10
     MAX_SUBPLANS             - cap on sub-plans per request, default: 5
 """
@@ -46,8 +48,8 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(APP_DIR, "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-MAX_FIX_ATTEMPTS = int(os.environ.get("MAX_FIX_ATTEMPTS", "2"))
-SANDBOX_TIMEOUT_SECONDS = int(os.environ.get("SANDBOX_TIMEOUT_SECONDS", "40"))
+MAX_FIX_ATTEMPTS = int(os.environ.get("MAX_FIX_ATTEMPTS", "0"))
+SANDBOX_TIMEOUT_SECONDS = int(os.environ.get("SANDBOX_TIMEOUT_SECONDS", "60"))
 HISTORY_WINDOW = int(os.environ.get("HISTORY_WINDOW", "10"))
 MAX_SUBPLANS = int(os.environ.get("MAX_SUBPLANS", "5"))
 
@@ -80,6 +82,7 @@ class CadState(TypedDict, total=False):
     stl_path: str
     step_path: str
     fix_attempts: int
+    executed: dict  # code -> last result, so identical scripts never re-run
 
     # --- step 5: final response ---
     response: dict
@@ -156,7 +159,8 @@ Rules:
 2. The script must end by assigning the finished part to `result`.
 3. Fix the reported error while preserving the plan's intent.
 4. Note: safe_union(*parts) accepts ANY number of parts (safe_union(a, b, c, ...)) — passing many parts at once is fine and is NOT the bug.
-5. Do not call show_object() or any exporter.
+5. If the error mentions a TIMEOUT or a heavy boolean operation, rebuild the geometry with the high-level cad_primitives helpers so arrays are created in a single extrude and ONE boolean op (e.g. make_pin_grid) — never generate hundreds of individual parts or per-part unions.
+6. Do not call show_object() or any exporter.
 """
 
 # Per-message planner notes: targeted reminders that are stickier than rules
@@ -300,7 +304,12 @@ def run_in_sandbox(code: str) -> tuple[bool, str, str, str]:
     if worker.is_alive():
         return (
             False,
-            f"Generated script timed out after {SANDBOX_TIMEOUT_SECONDS} seconds (likely an infinite loop or an extremely heavy boolean operation).",
+            f"Generated script timed out after {SANDBOX_TIMEOUT_SECONDS} seconds — "
+        f"likely an infinite loop or an extremely heavy boolean operation. "
+        f"Rebuild the geometry with the high-level cad_primitives helpers "
+        f"(e.g. make_pin_grid for pin arrays, make_box_room for rooms) so "
+        f"arrays are created in a single extrude and ONE boolean op — never "
+        f"generate hundreds of individual parts or per-part unions.",
             "",
             "",
         )
@@ -397,14 +406,24 @@ def merge_code(state: CadState) -> dict:
 
 
 def execute_code(state: CadState) -> dict:
-    """Step 4b — run the merged script in the sandbox."""
-    ok, error, stl_path, step_path = run_in_sandbox(state["merged_code"])
-    return {
+    """Step 4b — run the merged script in the sandbox.
+
+    Dedup guard: if this exact script already ran and failed (e.g. the repair
+    node returned identical code), return the stored result instead of paying
+    for a second execution and burning another repair attempt."""
+    code = state["merged_code"]
+    executed = state.get("executed", {})
+    if code in executed:
+        return {"executed": executed, **executed[code]}
+
+    ok, error, stl_path, step_path = run_in_sandbox(code)
+    result = {
         "ok": ok,
         "execution_error": error,
         "stl_path": stl_path,
         "step_path": step_path,
     }
+    return {"executed": {**executed, code: result}, **result}
 
 
 def repair_code(state: CadState) -> dict:

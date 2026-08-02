@@ -21,8 +21,8 @@ Env vars:
     GEMINI_TEMPERATURE          - default: 0.0
     GEMINI_RETRY_ATTEMPTS       - default: 3
     GEMINI_RETRY_DELAY_SECONDS  - default: 3
-    MAX_FIX_ATTEMPTS            - default: 2
-    SANDBOX_TIMEOUT_SECONDS     - default: 40
+    MAX_FIX_ATTEMPTS            - default: 0 (single trial per request; set higher to let the model fix its own code, at the cost of more API calls)
+    SANDBOX_TIMEOUT_SECONDS     - default: 60
     HISTORY_WINDOW              - default: 10
     MAX_SUBPLANS                - default: 5
     CORS_ORIGINS                - comma-separated list, default: *

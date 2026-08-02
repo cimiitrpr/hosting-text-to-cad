@@ -105,6 +105,10 @@ def make_pin_grid(base, pins_x, pins_y, pin_size, pin_height, pitch):
     Fuse a rectangular grid of square cooling pins onto the TOP face of an
     existing base plate (heatsink-style). The grid is centered on the base.
 
+    Each pin is fused with one small, trivial boolean union (measured ~10s for
+    a 12x12 grid) — a single OCCT multi-fuse of 144 disjoint solids against
+    the base is actually far slower, so we deliberately do per-pin unions.
+
     base: existing part (e.g. a flat plate) to fuse pins onto
     pins_x / pins_y: number of pins per row / column
     pin_size: side length of each square pin

@@ -29,8 +29,8 @@ it from the backend.
 | `GEMINI_TEMPERATURE`        | `0.0`              | Sampling temperature                      |
 | `GEMINI_RETRY_ATTEMPTS`     | `3`                | Retries on transient API errors           |
 | `GEMINI_RETRY_DELAY_SECONDS`| `3`                | Backoff between retries                   |
-| `MAX_FIX_ATTEMPTS`          | `2`                | Repair-loop cap in the workflow           |
-| `SANDBOX_TIMEOUT_SECONDS`   | `40`               | Watchdog timeout for generated code       |
+| `MAX_FIX_ATTEMPTS`          | `0`                | Repair-loop cap (0 = one trial per request, no self-correction — set 1–3 to let the model fix its own code at the cost of more API calls) |
+| `SANDBOX_TIMEOUT_SECONDS`   | `60`               | Watchdog timeout for generated code
 | `HISTORY_WINDOW`            | `10`               | Conversation turns sent to the planner    |
 | `MAX_SUBPLANS`              | `5`                | Cap on sub-plans per request              |
 | `CORS_ORIGINS`              | `*`                | Comma-separated allowed origins           |
