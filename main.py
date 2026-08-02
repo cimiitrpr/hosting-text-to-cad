@@ -42,6 +42,7 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -64,6 +65,13 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory=OUTPUT_DIR), name="static")
+
+@app.get("/")
+async def index():
+    """Serve the chat UI from the backend so the frontend works at the same
+    origin (no CORS / file:// issues) — http://localhost:8000/"""
+    return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
+
 
 # ---------------------------------------------------------------------------
 # In-memory session store.
