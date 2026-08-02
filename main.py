@@ -16,13 +16,19 @@ Changes vs. v3:
    variables (defaults listed in README.md).
 
 Env vars:
-    GEMINI_API_KEY              - required
-    GEMINI_MODEL                - default: gemini-2.5-flash
-    GEMINI_TEMPERATURE          - default: 0.0
-    GEMINI_RETRY_ATTEMPTS       - default: 3
-    GEMINI_RETRY_DELAY_SECONDS  - default: 3
-    MAX_FIX_ATTEMPTS            - default: 0 (single trial per request; set higher to let the model fix its own code, at the cost of more API calls)
-    SANDBOX_TIMEOUT_SECONDS     - default: 60
+     GEMINI_API_KEY                  - required if LLM_PROVIDER=gemini
+    GROQ_API_KEY                    - required if LLM_PROVIDER=groq
+    LLM_PROVIDER                    - "gemini" (default) or "groq"
+    GEMINI_MODEL                    - default: gemini-2.5-flash
+    GEMINI_TEMPERATURE              - default: 0.0
+    GEMINI_RETRY_ATTEMPTS           - default: 3
+    GEMINI_RETRY_DELAY_SECONDS      - default: 3
+    GROQ_MODEL                      - default: llama-3.3-70b-versatile
+    GROQ_TEMPERATURE                - default: 0.0
+    GROQ_RETRY_ATTEMPTS             - default: 3
+    GROQ_RETRY_DELAY_SECONDS        - default: 3
+    MAX_FIX_ATTEMPTS                - default: 0 (single trial per request; set higher to let the model fix its own code, at the cost of more API calls)
+    SANDBOX_TIMEOUT_SECONDS         - default: 60
     HISTORY_WINDOW              - default: 10
     MAX_SUBPLANS                - default: 5
     CORS_ORIGINS                - comma-separated list, default: *
@@ -102,7 +108,7 @@ async def chat(request: ChatRequest):
                 "base_step_path": session["base_step_path"],
             }
         )
-    except gemini.QuotaExceededError as e:
+    except (gemini.QuotaExceededError, groq.QuotaExceededError) as e:
         raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM pipeline failed: {e}")

@@ -1,8 +1,8 @@
 # text-to-cad
 
-Text-to-CAD web app: an LLM (Gemini) writes CadQuery code from chat prompts,
-the backend processes it through a 5-step LangGraph workflow, and the browser
-shows the 3D result with downloadable STEP/STL files.
+Text-to-CAD web app: an LLM (Gemini or Groq) writes CadQuery code from chat
+prompts, the backend processes it through a 5-step LangGraph workflow, and the
+browser shows the 3D result with downloadable STEP/STL files.
 
 ## Setup
 
@@ -13,7 +13,7 @@ source .venv/Scripts/activate
 (also make a .env file with - GEMINI_API_KEY=your_key_here  
                               LLM_PROVIDER=gemini)
 pip install -r requirements.txt
-export GEMINI_API_KEY=your_key_here
+export GEMINI_API_KEY=your_key_here      # or: export LLM_PROVIDER=groq; export GROQ_API_KEY=...
 python main.py
 ```
 
@@ -24,10 +24,17 @@ it from the backend.
 
 | Env var                     | Default            | Purpose                                   |
 |-----------------------------|--------------------|-------------------------------------------|
-| `GEMINI_API_KEY`            | — (required)       | Google Gemini API key                     |
+| `LLM_PROVIDER`              | `gemini`           | `gemini` or `groq` — which LLM client to use (can also be set per-request via `state["provider"]`) |
+| `GEMINI_API_KEY`            | — (required if provider is gemini) | Google Gemini API key         |
 | `GEMINI_MODEL`              | `gemini-2.5-flash` | Model id used by gemini.py                |
 | `GEMINI_TEMPERATURE`        | `0.0`              | Sampling temperature                      |
 | `GEMINI_RETRY_ATTEMPTS`     | `3`                | Retries on transient API errors           |
+| `GROQ_API_KEY`              | — (required if provider is groq) | Groq API key (https://console.groq.com) |
+| `GROQ_MODEL`                | `llama-3.3-70b-versatile` | Model id used by groq.py     |
+| `GROQ_TEMPERATURE`          | `0.0`              | Sampling temperature                      |
+| `GROQ_RETRY_ATTEMPTS`       | `3`                | Retries on transient API errors           |
+| `GROQ_RETRY_DELAY_SECONDS`  | `3`                | Backoff between retries                   |
+| `GROQ_MAX_RETRY_DELAY_SECONDS` | `60`           | Cap on backoff (Groq's Retry-After honored)|
 | `GEMINI_RETRY_DELAY_SECONDS`| `3`                | Backoff between retries                   |
 | `MAX_FIX_ATTEMPTS`          | `0`                | Repair-loop cap (0 = one trial per request, no self-correction — set 1–3 to let the model fix its own code at the cost of more API calls) |
 | `SANDBOX_TIMEOUT_SECONDS`   | `60`               | Watchdog timeout for generated code
@@ -50,8 +57,10 @@ it from the backend.
      script, runs it in the sandbox, and loops errors back to a repair prompt
      (capped by `MAX_FIX_ATTEMPTS`).
   5. `finalize` — returns artifact URLs and the generated code.
-- `gemini.py` — the only LLM client; reads provider/model/temperature from the
-  workflow state and calls Gemini.
+- `gemini.py` / `groq.py` — LLM clients; the workflow's `_llm()` dispatches to
+  one of them based on `LLM_PROVIDER` (or `state["provider"]`), and each client
+  reads its own provider/model/temperature from the workflow state and calls
+  its API.
 - `cad_primitives.py` — pre-tested building blocks the planner is told to use.
 - `index.html` — chat UI + Three.js 3D viewer. The backend URL is auto-detected
   (same origin, `?backend=` param, or `window.APP_CONFIG.BACKEND_URL`).

@@ -24,6 +24,8 @@ exec_worker.py was removed: sandbox execution now happens in-process with the
 same restricted builtins + import allow-list, guarded by a watchdog thread.
 
 Config (all optional, sensible defaults):
+    LLM_PROVIDER             - 'gemini' (default) or 'groq'; can also be set
+                               per-request via state["provider"]
     MAX_FIX_ATTEMPTS         - repair-loop cap, default: 0 (single trial per
                                request — set higher to let the model fix its
                                own code, at the cost of more API calls)
@@ -43,6 +45,7 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 import gemini
+import grok
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(APP_DIR, "output")
@@ -228,12 +231,20 @@ def _extract_json(text: str):
 
 
 def _llm(state: CadState, system_prompt: str, conversation_text: str) -> str:
-    """One LLM call whose config (provider/model/temperature) comes from the
-    workflow state, dispatched through gemini.py."""
+    """One LLM call whose provider/model/temperature come from the workflow
+    state, dispatched to gemini.py or groq.py. The provider is read from
+    state["provider"], falling back to the LLM_PROVIDER env var."""
     sub = dict(state)
     sub["system_prompt"] = system_prompt
     sub["conversation_text"] = conversation_text
-    return gemini.generate_from_state(sub)
+    provider = (state.get("provider") or os.environ.get("LLM_PROVIDER") or "gemini").lower()
+    if provider == "gemini":
+        return gemini.generate_from_state(sub)
+    if provider == "groq":
+        return groq.generate_from_state(sub)
+    raise ValueError(
+        f"Unknown LLM provider '{provider}'. Set LLM_PROVIDER to 'gemini' or 'groq'."
+    )
 
 
 # ---------------------------------------------------------------------------
