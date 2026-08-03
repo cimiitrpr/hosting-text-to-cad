@@ -21,8 +21,22 @@ This file is imported inside the sandbox at execution time so
 import cadquery as cq
 
 
-def make_beam(length, width, height, origin=(0, 0, 0)):
-    """A simple rectangular structural beam, centered at `origin`."""
+def make_beam(length, width, height=None, origin=(0, 0, 0), thickness=None):
+    """
+    A simple rectangular structural beam, centered at `origin`.
+
+    `thickness` is accepted as an alias for `height` — models commonly phrase
+    a flat plate as "length x width x thickness", so make_beam tolerates both
+    spellings rather than failing on an unexpected keyword.
+    """
+    if thickness is not None:
+        if height is not None:
+            raise ValueError(
+                "make_beam() received both 'height' and 'thickness' — pass only one."
+            )
+        height = thickness
+    if height is None:
+        raise ValueError("make_beam() requires a 'height' (or 'thickness') argument.")
     return (
         cq.Workplane("XY")
         .center(origin[0], origin[1])
@@ -100,38 +114,107 @@ def safe_union(*parts):
             )
     return result
 
-def make_pin_grid(base, pins_x, pins_y, pin_size, pin_height, pitch):
+def make_pin_grid(base=None, pins_x=None, pins_y=None, pin_size=None, pin_height=None, pitch=None,
+                  rows=None, cols=None, columns=None, grid_size=None, spacing=None,
+                  pin_diameter=None, pin_width=None, base_object=None, pin_dimensions=None):
     """
     Fuse a rectangular grid of square cooling pins onto the TOP face of an
-    existing base plate (heatsink-style). The grid is centered on the base.
+    existing base plate (heatsink-style), or return the bare pin array when
+    `base` is omitted (pins then start at z=0, centered at the origin — the
+    caller can safe_union() them onto a plate itself). The grid is centered
+    on the base.
 
     Each pin is fused with one small, trivial boolean union (measured ~10s for
     a 12x12 grid) — a single OCCT multi-fuse of 144 disjoint solids against
     the base is actually far slower, so we deliberately do per-pin unions.
 
+    The signature is deliberately forgiving — models routinely phrase grids
+    with natural-language names instead of the exact parameter names, so
+    common aliases are accepted:
+        rows / cols / grid_size=(r, c)       -> pins_x / pins_y
+        spacing as scalar OR (x, y) tuple    -> pitch (per-axis)
+        pin_diameter / pin_width             -> pin_size
+        pin_dimensions=(w, d, h) or (w, h)   -> pin_size / pin_height
+        base_object                          -> base
+    If the pitch is omitted it is derived from the base plate's size
+    (pitch = plate length / pins per side), so a 120mm plate with 12 pins
+    automatically gets 10mm spacing.
+
     base: existing part (e.g. a flat plate) to fuse pins onto
     pins_x / pins_y: number of pins per row / column
     pin_size: side length of each square pin
     pin_height: pin height above the base's top face
-    pitch: center-to-center spacing between pins — plate length / pins per
-           side (e.g. a 120mm plate with 12 pins -> pitch=10)
+    pitch: center-to-center spacing (scalar or (x_pitch, y_pitch))
     """
-    bbox = base.val().BoundingBox()
-    top_z = bbox.zmax
-    cx = (bbox.xmin + bbox.xmax) / 2
-    cy = (bbox.ymin + bbox.ymax) / 2
-    x0 = cx - (pins_x - 1) * pitch / 2
-    y0 = cy - (pins_y - 1) * pitch / 2
-    result = base
+    if base is None:
+        base = base_object
+    if pin_dimensions is not None:
+        if len(pin_dimensions) >= 3:
+            if pin_size is None:
+                pin_size = pin_dimensions[0]
+            if pin_height is None:
+                pin_height = pin_dimensions[2]
+        elif len(pin_dimensions) == 2:
+            if pin_size is None:
+                pin_size = pin_dimensions[0]
+            if pin_height is None:
+                pin_height = pin_dimensions[1]
+    if grid_size is not None:
+        pins_x, pins_y = grid_size
+    if pins_x is None:
+        pins_x = rows
+    if pins_y is None:
+        pins_y = cols if cols is not None else columns
+    if pin_size is None:
+        pin_size = pin_diameter if pin_diameter is not None else pin_width
+    if pitch is None:
+        pitch = spacing
+    if pins_x is None or pins_y is None:
+        raise ValueError(
+            "make_pin_grid() needs the grid size: pins_x/pins_y, rows/cols, "
+            "or grid_size=(rows, cols)."
+        )
+    if pin_size is None:
+        raise ValueError("make_pin_grid() needs pin_size (or pin_diameter/pin_width).")
+    if pin_height is None:
+        raise ValueError("make_pin_grid() needs pin_height.")
+
+    bbox = None
+    top_z = 0.0
+    cx = 0.0
+    cy = 0.0
+    if base is not None:
+        bbox = base.val().BoundingBox()
+        top_z = bbox.zmax
+        cx = (bbox.xmin + bbox.xmax) / 2
+        cy = (bbox.ymin + bbox.ymax) / 2
+
+    if isinstance(pitch, (tuple, list)):
+        pitch_x, pitch_y = float(pitch[0]), float(pitch[1])
+    else:
+        pitch_x = pitch_y = pitch
+    if pitch_x is None:
+        pitch_x = (bbox.xlen / pins_x) if bbox is not None else pin_size * 2
+    if pitch_y is None:
+        pitch_y = (bbox.ylen / pins_y) if bbox is not None else pin_size * 2
+
+    x0 = cx - (pins_x - 1) * pitch_x / 2
+    y0 = cy - (pins_y - 1) * pitch_y / 2
+    result = None
     for i in range(pins_x):
         for j in range(pins_y):
             pin = (
                 cq.Workplane("XY")
-                .center(x0 + i * pitch, y0 + j * pitch)
+                .center(x0 + i * pitch_x, y0 + j * pitch_y)
                 .workplane(offset=top_z)
                 .box(pin_size, pin_size, pin_height, centered=(True, True, False))
             )
-            result = result.union(pin)
+            if result is None:
+                result = pin
+            else:
+                result = result.union(pin)
+    if base is not None:
+        result = base.union(result)
     return result
 
 

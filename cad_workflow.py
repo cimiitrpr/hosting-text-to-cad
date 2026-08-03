@@ -113,13 +113,13 @@ PLAN_PROMPT = """You are a mechanical CAD planner for CadQuery. Convert the requ
 Each sub-plan is one step of geometry that builds on earlier sub-plans by name — later sub-plans reference variables created by earlier ones, so the final code is one coherent part, never isolated snippets.
 
 Primitive catalog (all from cad_primitives, already importable as: from cad_primitives import *):
-- make_beam(length, width, height, origin=(0,0,0)) — rectangular structural beam
+- make_beam(length, width, height=None, origin=(0,0,0), thickness=None) — rectangular structural beam; `thickness` is an accepted alias for `height` (e.g. a 120mm x 120mm x 8mm plate -> make_beam(120, 120, thickness=8))
 - make_rail(length, width, height, hole_spacing=None, hole_diameter=6) — long rail with optional mounting holes
 - add_crossmember(base, length, width, height, x_position) — fuses a beam onto base
 - bolt_pattern_holes(workplane, diameter, positions) — holes at explicit (x, y)
 - make_wheel_mount(diameter, width, position=(x,y,z)) — cylindrical mount along Y
  - safe_union(*parts) — fuses ANY number of parts into one (safe_union(a, b) or safe_union(a, b, c, ...)); raises a clear error if consecutive parts don't touch
-- make_pin_grid(base, pins_x, pins_y, pin_size, pin_height, pitch) — fuses a centered grid of square cooling pins onto the TOP face of an existing base; use for ANY heatsink / pin-array / radiator request (e.g. 120mm plate with 12x12 pins -> pitch=10)
+- make_pin_grid(base=None, pins_x=None, pins_y=None, pin_size=None, pin_height=None, pitch=None, ...) — fuses a centered grid of square cooling pins onto the TOP face of an existing base; use for ANY heatsink / pin-array / radiator request. ALSO accepts natural-language aliases: rows, cols, grid_size=(r, c), spacing (for pitch), pin_diameter/pin_width (for pin_size), base_object (for base). If pitch is omitted it is auto-derived from the plate size (plate length / pins per side). Example: 120mm plate, 12x12 pins, 4mm pins, 50mm tall -> make_pin_grid(base_plate, pins_x=12, pins_y=12, pin_size=4, pin_height=50)
 - make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_head=True) — use for ANY screw/bolt request; metric size M3 -> shank_diameter=3
 - make_l_bracket(leg1_length, leg2_length, width, thickness, hole_diameter=None, hole_inset=None) — use for ANY angle/L bracket
 - make_wall(length, height, thickness, origin=(0,0,0), axis="x"|"y") — wall from a STARTING CORNER
@@ -162,7 +162,8 @@ Rules:
 3. Fix the reported error while preserving the plan's intent.
 4. Note: safe_union(*parts) accepts ANY number of parts (safe_union(a, b, c, ...)) — passing many parts at once is fine and is NOT the bug.
 5. If the error mentions a TIMEOUT or a heavy boolean operation, rebuild the geometry with the high-level cad_primitives helpers so arrays are created in a single extrude and ONE boolean op (e.g. make_pin_grid) — never generate hundreds of individual parts or per-part unions.
-6. Do not call show_object() or any exporter.
+6. Call each primitive with its real parameter names. make_pin_grid accepts aliases (rows, cols, grid_size=(r, c), spacing, pin_diameter, pin_width, base_object) and auto-derives pitch from the plate size; make_beam accepts thickness as an alias for height. Use the user's exact dimensions.
+7. Do not call show_object() or any exporter.
 """
 
 # Per-message planner notes: targeted reminders that are stickier than rules
@@ -181,9 +182,13 @@ _PLANNER_NOTES = {
         "rather than hand-written polylines."
     ),
     ("heatsink", "cooling pin", "pin grid", "array of pins", "radiator", "fins"): (
-    "This is a heatsink/pin-array: plan a flat base plate plus ONE make_pin_grid(...) call "
-    "for all the pins (pitch = plate length / pins per side, e.g. 120mm plate with 12 pins "
-    "-> pitch=10). Do NOT plan individual pins or manual per-pin unions."
+    "This is a heatsink/pin-array: plan a flat base plate (make_beam with thickness for the "
+    "plate height) plus ONE make_pin_grid(...) call for all the pins. USE THE USER'S EXACT "
+    "DIMENSIONS — copy the plate length/width/thickness and pin size/height verbatim from the "
+    "request; do not invent or round numbers. The pin grid must be built on the base plate "
+    "(make_pin_grid(base, pins_x=..., pins_y=..., pin_size=..., pin_height=...)); pitch is "
+    "auto-derived from the plate size, so a 120mm plate with 12 pins per side gets 10mm spacing. "
+    "Do NOT plan individual pins or manual per-pin unions."
 ),
     ("house", "building", "room", "roof", "cabin"): (
         "This is a building: plan make_box_room(...) or per-wall make_wall(...), cut_opening(...) "
@@ -390,6 +395,14 @@ def generate_code(state: CadState) -> dict:
             [
                 f"FULL PLAN:\n{json.dumps(plan, indent=1)}",
                 f"\nCURRENT SUB-PLAN (you code this one):\n{json.dumps(subplan)}",
+                (
+                    f"\nORIGINAL USER REQUEST (use these EXACT numbers, units in mm — never "
+                    f"change, round, or invent dimensions):\n{state['user_message']}"
+                ),
+                (
+                    f"\nCLASSIFIED INTENT (dimension summary — copy measurements verbatim):\n"
+                    f"{state.get('intent', '')}"
+                ),
             ]
         )
         if state.get("base_step_path"):
@@ -441,6 +454,10 @@ def repair_code(state: CadState) -> dict:
     context = "\n".join(
         [
             f"PLAN:\n{json.dumps(state['plan'], indent=1)}",
+            (
+                f"\nORIGINAL USER REQUEST (use these EXACT numbers, units in mm — never "
+                f"change, round, or invent dimensions):\n{state['user_message']}"
+            ),
             f"\nFAILED SCRIPT:\n{state['merged_code']}",
             f"\nSANDBOX ERROR:\n{state['execution_error']}",
         ]
