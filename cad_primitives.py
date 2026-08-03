@@ -124,9 +124,9 @@ def make_pin_grid(base=None, pins_x=None, pins_y=None, pin_size=None, pin_height
     caller can safe_union() them onto a plate itself). The grid is centered
     on the base.
 
-    Each pin is fused with one small, trivial boolean union (measured ~10s for
-    a 12x12 grid) — a single OCCT multi-fuse of 144 disjoint solids against
-    the base is actually far slower, so we deliberately do per-pin unions.
+    Each pin is built in ONE extrude (a single rarray sketch) and fused to the
+    base with a single boolean union — fast enough to never hit sandbox
+    timeouts, even for 12x12 grids on constrained hosting.
 
     The signature is deliberately forgiving — models routinely phrase grids
     with natural-language names instead of the exact parameter names, so
@@ -198,24 +198,22 @@ def make_pin_grid(base=None, pins_x=None, pins_y=None, pin_size=None, pin_height
     if pitch_y is None:
         pitch_y = (bbox.ylen / pins_y) if bbox is not None else pin_size * 2
 
-    x0 = cx - (pins_x - 1) * pitch_x / 2
-    y0 = cy - (pins_y - 1) * pitch_y / 2
-    result = None
-    for i in range(pins_x):
-        for j in range(pins_y):
-            pin = (
-                cq.Workplane("XY")
-                .center(x0 + i * pitch_x, y0 + j * pitch_y)
-                .workplane(offset=top_z)
-                .box(pin_size, pin_size, pin_height, centered=(True, True, False))
-            )
-            if result is None:
-                result = pin
-            else:
-                result = result.union(pin)
+    # ALL pins in ONE extrude (a single rarray sketch with 144 rects), then
+    # ONE boolean union with the base. Earlier versions fused each pin
+    # separately (144 sequential booleans, ~10s locally and 60s+ on slow
+    # hosting tiers — the classic cause of sandbox timeouts). A single
+    # extrude + single fuse is effectively instant regardless of grid size.
+    pins = (
+        cq.Workplane("XY")
+        .center(cx, cy)
+        .workplane(offset=top_z)
+        .rarray(pitch_x, pitch_y, pins_x, pins_y)
+        .rect(pin_size, pin_size)
+        .extrude(pin_height)
+    )
     if base is not None:
-        result = base.union(result)
-    return result
+        return base.union(pins)
+    return pins
 
 
 def make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_head=True):

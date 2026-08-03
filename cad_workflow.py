@@ -26,10 +26,9 @@ same restricted builtins + import allow-list, guarded by a watchdog thread.
 Config (all optional, sensible defaults):
     LLM_PROVIDER             - 'gemini' (default) or 'groq'; can also be set
                                per-request via state["provider"]
-    MAX_FIX_ATTEMPTS         - repair-loop cap, default: 0 (single trial per
-                               request — set higher to let the model fix its
-                               own code, at the cost of more API calls)
-    SANDBOX_TIMEOUT_SECONDS  - watchdog timeout for generated code, default: 60
+    MAX_FIX_ATTEMPTS         - repair-loop cap, default: 2 (original attempt
+                               plus up to 2 self-repair attempts)
+    SANDBOX_TIMEOUT_SECONDS  - watchdog timeout for generated code, default: 120
     HISTORY_WINDOW           - conversation turns sent to the planner, default: 10
     MAX_SUBPLANS             - cap on sub-plans per request, default: 5
 """
@@ -50,8 +49,8 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(APP_DIR, "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-MAX_FIX_ATTEMPTS = int(os.environ.get("MAX_FIX_ATTEMPTS", "0"))
-SANDBOX_TIMEOUT_SECONDS = int(os.environ.get("SANDBOX_TIMEOUT_SECONDS", "60"))
+MAX_FIX_ATTEMPTS = int(os.environ.get("MAX_FIX_ATTEMPTS", "2"))
+SANDBOX_TIMEOUT_SECONDS = int(os.environ.get("SANDBOX_TIMEOUT_SECONDS", "120"))
 HISTORY_WINDOW = int(os.environ.get("HISTORY_WINDOW", "10"))
 MAX_SUBPLANS = int(os.environ.get("MAX_SUBPLANS", "5"))
 

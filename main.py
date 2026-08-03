@@ -27,8 +27,8 @@ Env vars:
     GROQ_TEMPERATURE                - default: 0.0
     GROQ_RETRY_ATTEMPTS             - default: 3
     GROQ_RETRY_DELAY_SECONDS        - default: 3
-    MAX_FIX_ATTEMPTS                - default: 0 (single trial per request; set higher to let the model fix its own code, at the cost of more API calls)
-    SANDBOX_TIMEOUT_SECONDS         - default: 60
+    MAX_FIX_ATTEMPTS                - default: 2 (original attempt plus up to 2 self-repair attempts)
+    SANDBOX_TIMEOUT_SECONDS         - default: 120
     HISTORY_WINDOW              - default: 10
     MAX_SUBPLANS                - default: 5
     CORS_ORIGINS                - comma-separated list, default: *
