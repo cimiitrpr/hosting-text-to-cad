@@ -18,25 +18,91 @@ This file is imported inside the sandbox at execution time so
 `from cad_primitives import *` works for generated scripts.
 """
 
+import functools
+import inspect
+
 import cadquery as cq
 
 
-def make_beam(length, width, height=None, origin=(0, 0, 0), thickness=None):
+# ---------------------------------------------------------------------------
+# Hallucination-proof argument handling
+# ---------------------------------------------------------------------------
+# Models frequently call primitives with natural-language keyword names that
+# don't exist in the signature (e.g. bolt_pattern_holes(pattern=...),
+# make_l_bracket(length=..., depth=...), make_wall(base_object=...)). Instead
+# of crashing every time with 'unexpected keyword argument', every primitive
+# is wrapped in `flexible`, which:
+#   1. maps known aliases onto real parameter names (first candidate that the
+#      function actually accepts wins; an explicit real name always wins), and
+#   2. silently drops any other unknown keyword.
+# So a hallucinated kwarg can never crash a primitive by name — only a truly
+# missing required value can, and that raises a clear, repairable error.
+_GLOBAL_ALIASES = {
+    "thickness": ["height"],
+    "depth": ["leg2_length", "height", "length"],
+    "length": ["leg1_length", "length"],
+    "height": ["pin_height", "leg1_length", "height"],
+    "width": ["pin_size", "width"],
+    "diameter": ["shank_diameter", "hole_diameter", "diameter"],
+    "dia": ["shank_diameter", "hole_diameter", "diameter"],
+    "hole_diameter": ["diameter", "hole_diameter"],
+    "pattern": ["positions"],
+    "hole_positions": ["positions"],
+    "holes": ["positions"],
+    "base_object": ["base"],
+    "object": ["base"],
+    "plate": ["base"],
+    "pos": ["position"],
+    "location": ["position"],
+    "size": ["pin_size"],
+    "count": ["pins_x", "pins_y"],
+}
+
+
+def flexible(func):
+    """Decorator: tolerate alias names and ignore unknown kwargs."""
+    mapping = dict(_GLOBAL_ALIASES)
+    mapping.update(getattr(func, "_aliases", {}))
+    params = set(inspect.signature(func).parameters)
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        renamed = {}
+        for name, value in kwargs.items():
+            if name in params:
+                renamed[name] = value
+                continue
+            target = next((t for t in mapping.get(name, ()) if t in params), None)
+            if target is not None and target not in renamed:
+                renamed[target] = value
+        return func(*args, **renamed)
+
+    return wrapper
+
+
+@flexible
+def make_beam(length, width, height=None, origin=(0, 0, 0), shape=None):
     """
     A simple rectangular structural beam, centered at `origin`.
 
     `thickness` is accepted as an alias for `height` — models commonly phrase
     a flat plate as "length x width x thickness", so make_beam tolerates both
     spellings rather than failing on an unexpected keyword.
+
+    `shape="cylinder"` builds a vertical cylinder instead (diameter = width,
+    height = height) — models frequently describe cylindrical parts as beams
+    with a shape hint, and this keeps those scripts working.
     """
-    if thickness is not None:
-        if height is not None:
-            raise ValueError(
-                "make_beam() received both 'height' and 'thickness' — pass only one."
-            )
-        height = thickness
     if height is None:
         raise ValueError("make_beam() requires a 'height' (or 'thickness') argument.")
+    if shape and str(shape).lower() == "cylinder":
+        return (
+            cq.Workplane("XY")
+            .center(origin[0], origin[1])
+            .workplane(offset=origin[2])
+            .circle(width / 2)
+            .extrude(height)
+        )
     return (
         cq.Workplane("XY")
         .center(origin[0], origin[1])
@@ -45,6 +111,7 @@ def make_beam(length, width, height=None, origin=(0, 0, 0), thickness=None):
     )
 
 
+@flexible
 def make_rail(length, width, height, hole_spacing=None, hole_diameter=6):
     """
     A structural rail (long beam) with optional evenly spaced mounting holes
@@ -63,6 +130,7 @@ def make_rail(length, width, height, hole_spacing=None, hole_diameter=6):
     return rail
 
 
+@flexible
 def add_crossmember(base, length, width, height, x_position):
     """Fuses a cross-member beam onto `base` at a given x position."""
     cross = (
@@ -73,13 +141,48 @@ def add_crossmember(base, length, width, height, x_position):
     return base.union(cross)
 
 
-def bolt_pattern_holes(workplane, diameter, positions):
-    """Drill holes at explicit (x, y) positions on the current workplane."""
+@flexible
+def bolt_pattern_holes(workplane=None, diameter=None, positions=None, pattern=None, count=1,
+                       spacing=0, axis="x", target=None, depth=None, location=None):
+    """
+    Drill holes into a part, returning the drilled part (as a Workplane).
+
+    Two usage styles (the model mixes them up, so both work):
+      1. Explicit positions:  bolt_pattern_holes(wp, 6, positions=[(10, 0), (-10, 0)])
+      2. Linear pattern:      bolt_pattern_holes(wp, 6, count=2, spacing=14, axis="x")
+                             (also triggered by pattern="linear"; count>=2)
+
+    `workplane` may be an existing Workplane OR a solid part — solids are
+    converted automatically by drilling through their top (>Z) face. `target=`
+    may be given instead of `workplane` (models phrase it that way). Strings
+    passed as `workplane` (e.g. "XY") are treated as missing and a clear error
+    is raised. Unknown keywords (depth, location, mode, ...) are ignored.
+    """
+    if isinstance(workplane, str):
+        workplane = None
+    if target is not None and not isinstance(target, str):
+        workplane = target
+    if workplane is None or diameter is None:
+        raise ValueError(
+            "bolt_pattern_holes() needs a part or Workplane (or target=...) and a diameter."
+        )
+    if not hasattr(workplane, "workplane"):
+        workplane = workplane.faces(">Z").workplane()
+    if positions is None and count is not None and count >= 2:
+        ax = 0 if str(axis).lower().startswith("x") else 1
+        positions = []
+        for i in range(int(count)):
+            p = [0.0, 0.0]
+            p[ax] = (i - (int(count) - 1) / 2) * float(spacing)
+            positions.append((p[0], p[1]))
+    if not positions:
+        positions = [(0, 0)]
     for x, y in positions:
         workplane = workplane.moveTo(x, y).hole(diameter)
     return workplane
 
 
+@flexible
 def make_wheel_mount(diameter, width, position):
     """
     A cylindrical wheel/axle mount, oriented along the Y axis, placed at
@@ -95,25 +198,64 @@ def make_wheel_mount(diameter, width, position):
     )
 
 
-def safe_union(*parts):
+make_wheel_mount._aliases = {"length": ["width"], "pos": ["position"], "location": ["position"]}
+
+
+@flexible
+def make_cylinder(diameter, height, position=(0, 0, 0)):
     """
-     Fuse any number of solids into one, raising a clear error instead of a
+    A vertical solid cylinder, centered on `position` (its mid-height sits at
+    position[2]). Use for any cylindrical section — disc, shaft, spacer, pin.
+    """
+    x, y, z = position
+    return (
+        cq.Workplane("XY")
+        .center(x, y)
+        .workplane(offset=z)
+        .circle(diameter / 2)
+        .extrude(height)
+        .translate((0, 0, -height / 2))
+    )
+
+
+def safe_union(*parts, base=None, tool=None, mode=None, **kwargs):
+    """
+    Fuse any number of solids into one, raising a clear error instead of a
     cryptic OCC failure if consecutive parts don't actually intersect or
     touch (a common mistake when positioning cross-members or mounts).
     Accepts any number of parts: safe_union(a, b) or safe_union(a, b, c, ...).
+
+    Tolerant by design:
+    - `base=`/`tool=` named arguments are accepted when no positional parts
+      are given (a phrasing models like: safe_union(base=a, tool=b)).
+    - Workplanes are unwrapped to their underlying solid (a part returned by
+      bolt_pattern_holes() is a drilled Workplane — unioning it in gives the
+      drilled part).
+    - Extra keywords (mode="cut", target=, etc. that models invent) are
+      ignored rather than crashing.
     """
     if not parts:
+        parts = [p for p in (base, tool) if p is not None]
+    if not parts:
         raise ValueError("safe_union() requires at least one part.")
-    result = parts[0]
+
+    def _solid(part):
+        return part.val() if hasattr(part, "val") else part
+
+    def _to_workplane(part):
+        return part if hasattr(part, "val") else cq.Workplane("XY").add(part)
+
+    result = _to_workplane(parts[0])
     for addition in parts[1:]:
         try:
-            result = result.union(addition)
+            result = result.union(_solid(addition))
         except Exception as e:
             raise ValueError(
                 f"Union failed — the parts likely don't touch or overlap. Original error: {e}"
             )
     return result
 
+@flexible
 def make_pin_grid(base=None, pins_x=None, pins_y=None, pin_size=None, pin_height=None, pitch=None,
                   rows=None, cols=None, columns=None, grid_size=None, spacing=None,
                   pin_diameter=None, pin_width=None, base_object=None, pin_dimensions=None):
@@ -216,6 +358,7 @@ def make_pin_grid(base=None, pins_x=None, pins_y=None, pin_size=None, pin_height
     return pins
 
 
+@flexible
 def make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_head=True):
     """
     A screw/bolt: a cylindrical shank plus a head, with the THREAD SHOWN AS
@@ -291,6 +434,7 @@ def make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_
     return shank.union(head)
 
 
+@flexible
 def make_l_bracket(leg1_length, leg2_length, width, thickness, hole_diameter=None, hole_inset=None):
     """
     An L-shaped angle bracket: two perpendicular legs of a solid cross-section,
@@ -335,6 +479,7 @@ def make_l_bracket(leg1_length, leg2_length, width, thickness, hole_diameter=Non
 
     return result
 
+@flexible
 def make_lego_brick(studs_x, studs_y, height="standard"):
     """
     A standard Lego-proportioned brick: solid body with cylindrical studs
@@ -364,6 +509,7 @@ def make_lego_brick(studs_x, studs_y, height="standard"):
     )
     return body.union(studs)
 
+@flexible
 def make_wall(length, height, thickness, origin=(0, 0, 0), axis="x"):
     """
     origin = the wall's STARTING CORNER (not its center). The wall extends
@@ -389,12 +535,17 @@ def make_wall(length, height, thickness, origin=(0, 0, 0), axis="x"):
     raise ValueError("axis must be 'x' or 'y'")
 
 
+@flexible
 def cut_opening(wall, width, height, position, origin=(0, 0, 0), axis="x"):
     """
     position = (along_wall, from_ground) measured from the wall's STARTING
     CORNER (same origin/axis you passed to make_wall) — NOT from its center.
+    A 3-tuple (along, from_ground, z) is tolerated; the third value is ignored.
     """
-    along, from_ground = position
+    if len(position) == 3:
+        along, from_ground, _ = position
+    else:
+        along, from_ground = position
     x0, y0, z0 = origin
     z = z0 + from_ground + height / 2
     if axis == "x":
@@ -405,6 +556,7 @@ def cut_opening(wall, width, height, position, origin=(0, 0, 0), axis="x"):
         tool = cq.Workplane("XY").center(x0, cy).workplane(offset=z).box(1000, width, height, centered=(True, True, True))
     return wall.cut(tool)
 
+@flexible
 def make_pitched_roof(base_length, base_width, ridge_height, overhang=0, origin=(0, 0, 0)):
     """
     A simple pitched (gable) roof: a triangular prism sitting on top of a
@@ -424,6 +576,7 @@ def make_pitched_roof(base_length, base_width, ridge_height, overhang=0, origin=
     return profile.extrude(base_length)
 
 
+@flexible
 def make_flat_roof(length, width, thickness, origin=(0, 0, 0), overhang=0):
     """A simple flat roof slab — a box extended past the wall footprint by `overhang`."""
     return (
@@ -433,6 +586,52 @@ def make_flat_roof(length, width, thickness, origin=(0, 0, 0), overhang=0):
         .box(length + 2 * overhang, width + 2 * overhang, thickness, centered=(True, True, False))
     )
 
+@flexible
+def cut_dovetail(block, base_width, top_width, height, length=None, position=None, axis="x"):
+    """
+    Cut an inverted-trapezoid dovetail slot that opens on the block's BOTTOM
+    face (the undercut gets wider with depth). The slot is auto-positioned
+    from the block's own bounding box — no manual coordinates needed.
+
+    base_width: slot width at the opening (on the bottom face)
+    top_width:  wider undercut width deeper inside the block
+    height:     slot depth (how far up into the block it cuts)
+    length:     slot length along the run axis (defaults to the full block)
+    axis:       "x" (default) runs the slot along the block's X length;
+                "y" runs it along Y.
+    `position` is accepted for model compatibility and ignored.
+    """
+    work = block if hasattr(block, "val") else cq.Workplane("XY").add(block)
+    bb = work.val().BoundingBox()
+    if length is None:
+        length = bb.xlen if axis != "y" else bb.ylen
+    hw_b = base_width / 2
+    hw_t = top_width / 2
+    cx = (bb.xmin + bb.xmax) / 2
+    cy = (bb.ymin + bb.ymax) / 2
+    pts = [(-hw_t, height), (-hw_b, 0), (hw_b, 0), (hw_t, height)]
+    if axis == "y":
+        tool = (
+            cq.Workplane("XZ")
+            .workplane(offset=-length / 2)
+            .polyline(pts)
+            .close()
+            .extrude(length)
+            .translate((cx, 0, bb.zmin))
+        )
+    else:
+        tool = (
+            cq.Workplane("YZ")
+            .workplane(offset=-length / 2)
+            .polyline(pts)
+            .close()
+            .extrude(length)
+            .translate((0, cy, bb.zmin))
+        )
+    return work.cut(tool)
+
+
+@flexible
 def make_box_room(length, width, height, thickness):
     """
     Four walls forming a closed rectangular room centered at the origin,

@@ -115,8 +115,9 @@ Primitive catalog (all from cad_primitives, already importable as: from cad_prim
 - make_beam(length, width, height=None, origin=(0,0,0), thickness=None) — rectangular structural beam; `thickness` is an accepted alias for `height` (e.g. a 120mm x 120mm x 8mm plate -> make_beam(120, 120, thickness=8))
 - make_rail(length, width, height, hole_spacing=None, hole_diameter=6) — long rail with optional mounting holes
 - add_crossmember(base, length, width, height, x_position) — fuses a beam onto base
-- bolt_pattern_holes(workplane, diameter, positions) — holes at explicit (x, y)
+- bolt_pattern_holes(workplane_or_solid, diameter, positions=None, pattern=None, count=1, spacing=0, axis="x") — drill holes through a part's top face; give explicit `positions=[(x, y), ...]` OR a linear pattern via count/spacing/axis; pass a solid and the top face is used automatically; returns the drilled part
 - make_wheel_mount(diameter, width, position=(x,y,z)) — cylindrical mount along Y
+- make_cylinder(diameter, height, position=(0,0,0)) — vertical solid cylinder, centered on position (bottom at position z - height/2); use for ANY cylinder/disc/shaft/spacer/pin section (e.g. 90mm dia x 20mm tall -> make_cylinder(90, 20))
  - safe_union(*parts) — fuses ANY number of parts into one (safe_union(a, b) or safe_union(a, b, c, ...)); raises a clear error if consecutive parts don't touch
 - make_pin_grid(base=None, pins_x=None, pins_y=None, pin_size=None, pin_height=None, pitch=None, ...) — fuses a centered grid of square cooling pins onto the TOP face of an existing base; use for ANY heatsink / pin-array / radiator request. ALSO accepts natural-language aliases: rows, cols, grid_size=(r, c), spacing (for pitch), pin_diameter/pin_width (for pin_size), base_object (for base). If pitch is omitted it is auto-derived from the plate size (plate length / pins per side). Example: 120mm plate, 12x12 pins, 4mm pins, 50mm tall -> make_pin_grid(base_plate, pins_x=12, pins_y=12, pin_size=4, pin_height=50)
 - make_bolt(shank_diameter, length, head_diameter=None, head_height=None, hex_head=True) — use for ANY screw/bolt request; metric size M3 -> shank_diameter=3
@@ -124,6 +125,7 @@ Primitive catalog (all from cad_primitives, already importable as: from cad_prim
 - make_wall(length, height, thickness, origin=(0,0,0), axis="x"|"y") — wall from a STARTING CORNER
 - cut_opening(wall, width, height, position, origin=(0,0,0), axis="x"|"y") — cut doors/windows BEFORE unioning that wall in
 - make_box_room(length, width, height, thickness) — four cleanly-meeting walls
+- cut_dovetail(block, base_width, top_width, height, length=None, position=None, axis="x") — cut an inverted-trapezoid dovetail slot opening on the block's BOTTOM face (base_width at the opening, top_width at the undercut, height deep); auto-positioned from the block's bbox; use for ANY dovetail / trapezoidal groove request
 - make_pitched_roof(base_length, base_width, ridge_height, overhang=0, origin=(0,0,0)) — gable roof; origin must sit exactly on the wall top height
 - make_flat_roof(length, width, thickness, origin=(0,0,0), overhang=0) — flat roof slab
 
@@ -134,6 +136,8 @@ Rules:
 4. The LAST sub-plan must assemble everything from earlier sub-plans into a single part assigned to `result`.
 5. If the user is editing an existing part, the first sub-plan reuses the current part (`result` already holds it) and later sub-plans modify it in place.
 6. Choose primitives from the catalog only; never invent helpers that don't exist.
+7. Primitives accept natural-language alias keywords (thickness/depth/length/pattern/rows/cols/grid_size/spacing/base_object etc.) and ignore unknown ones — but ALWAYS prefer the documented parameter names and the user's exact dimensions.
+8. Never plan fillet/chamfer/edge operations — the primitives are already finished shapes; no model code may call .fillet()/.chamfer()/.edges()/.shell().
 
 Reply with ONLY a JSON object, no markdown fences, no commentary:
 {"subplans": [...]}"""
@@ -150,7 +154,8 @@ Rules:
 2. Define variables whose names match the plan's sub-plan ids/goals (e.g. rail_1, cross_beam, bracket_a).
 3. For the FINAL sub-plan: assign the finished part to a variable named `result`, built from the earlier variables (or from the existing `result` when editing).
 4. Use exactly the primitives chosen in the plan; do not hand-write low-level geometry that the plan assigns to a catalog primitive. For arrays/grids of repeated geometry (pins, studs, hole arrays), use the dedicated helper in ONE call — never generate dozens of individual parts and manual unions.
-5. Do not call show_object() or any exporter.
+5. Use the primitives' documented parameter names with the user's exact numbers. Never call .fillet(), .chamfer(), .edges(), or .shell() — those operations fail on the primitives' solid geometry.
+6. Do not call show_object() or any exporter.
 """
 
 REPAIR_PROMPT = """You fix a failing CadQuery script. You receive the full plan, the failed script, and the sandbox execution error.
@@ -162,7 +167,8 @@ Rules:
 4. Note: safe_union(*parts) accepts ANY number of parts (safe_union(a, b, c, ...)) — passing many parts at once is fine and is NOT the bug.
 5. If the error mentions a TIMEOUT or a heavy boolean operation, rebuild the geometry with the high-level cad_primitives helpers so arrays are created in a single extrude and ONE boolean op (e.g. make_pin_grid) — never generate hundreds of individual parts or per-part unions.
 6. Call each primitive with its real parameter names. make_pin_grid accepts aliases (rows, cols, grid_size=(r, c), spacing, pin_diameter, pin_width, base_object) and auto-derives pitch from the plate size; make_beam accepts thickness as an alias for height. Use the user's exact dimensions.
-7. Do not call show_object() or any exporter.
+7. Never call .fillet(), .chamfer(), .edges(), or .shell() — if the error mentions chamfer/fillet/edges, simply DELETE that call and rebuild the shape with the primitives.
+8. Do not call show_object() or any exporter.
 """
 
 # Per-message planner notes: targeted reminders that are stickier than rules
@@ -189,6 +195,17 @@ _PLANNER_NOTES = {
     "auto-derived from the plate size, so a 120mm plate with 12 pins per side gets 10mm spacing. "
     "Do NOT plan individual pins or manual per-pin unions."
 ),
+    ("dovetail", "trapezoid"): (
+        "This involves a dovetail/trapezoidal slot: plan the block (make_beam) plus ONE "
+        "cut_dovetail(block, base_width, top_width, height, ...) call with the user's exact "
+        "widths and depth. Never hand-write trapezoid profiles or invent other helpers."
+    ),
+    ("cylinder", "cylindrical", "spacer", "disc", "shaft"): (
+        "This involves cylindrical section(s): plan ONE make_cylinder(diameter, height, position=(x, y, z)) "
+        "call per section with the user's exact diameters/heights — never model cylinders as boxes. "
+        "A cylinder centered at the origin spans z=[-height/2, +height/2], so stack sections with "
+        "position=(0, 0, previous_top + next_height/2)."
+    ),
     ("house", "building", "room", "roof", "cabin"): (
         "This is a building: plan make_box_room(...) or per-wall make_wall(...), cut_opening(...) "
         "for doors/windows BEFORE unioning each wall, then make_pitched_roof(...)/make_flat_roof(...) "
