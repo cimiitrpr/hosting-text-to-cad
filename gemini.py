@@ -11,7 +11,7 @@ graph itself.
 
 Config (all optional, sensible defaults):
     GEMINI_API_KEY              - required to actually reach the API
-    GEMINI_MODEL                    - default: gemini-2.5-flash
+    GEMINI_MODEL                    - default: gemini-3.1-flash-lite
     GEMINI_TEMPERATURE              - default: 0.0
     GEMINI_RETRY_ATTEMPTS           - default: 3
     GEMINI_RETRY_DELAY_SECONDS      - default: 3
@@ -32,7 +32,7 @@ from google.genai import types
 from dotenv import load_dotenv
 load_dotenv()
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 # Google error responses carry a RetryInfo with a suggested delay, e.g.
 # {"@type": "...google.rpc.RetryInfo", "retryDelay": "56.170712972s"}
