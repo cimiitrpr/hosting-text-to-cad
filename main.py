@@ -32,6 +32,12 @@ Env vars:
     HISTORY_WINDOW              - default: 10
     MAX_SUBPLANS                - default: 5
     CORS_ORIGINS                - comma-separated list, default: *
+    CORS_ALLOW_CREDENTIALS      - "true"/"false", default: false. Per the CORS
+                                   spec, browsers reject credentialed requests
+                                   (cookies/auth headers) against a wildcard
+                                   origin. Only set this to true once
+                                   CORS_ORIGINS is a real explicit list — never
+                                   combine it with "*".
     PORT                        - default: 8000
 """
 
@@ -49,17 +55,38 @@ from pydantic import BaseModel
 from cad_workflow import OUTPUT_DIR, WORKFLOW, run_in_sandbox
 
 import gemini
+import groq
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = FastAPI(title="CIM Club Text-to-CAD Core v4")
 
 # CORS: allow the origins in CORS_ORIGINS (comma-separated); "*" by default.
-_cors_origins = os.environ.get("CORS_ORIGINS", "*")
+#
+# allow_credentials must NOT be True while origins includes "*" — the CORS
+# spec forbids combining a wildcard origin with credentialed requests, and
+# browsers will silently reject the response rather than error loudly, which
+# makes it a nasty landmine to debug later. So credentials only turn on when
+# the operator has explicitly configured real origins AND opted in via
+# CORS_ALLOW_CREDENTIALS.
+_cors_origins_raw = os.environ.get("CORS_ORIGINS", "*")
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+_wants_credentials = os.environ.get("CORS_ALLOW_CREDENTIALS", "false").strip().lower() == "true"
+_is_wildcard = _cors_origins == ["*"]
+
+if _wants_credentials and _is_wildcard:
+    raise RuntimeError(
+        "CORS_ALLOW_CREDENTIALS=true is incompatible with CORS_ORIGINS=* "
+        "(wildcard origin). Set CORS_ORIGINS to an explicit comma-separated "
+        "list of allowed origins to enable credentialed requests."
+    )
+
+_allow_credentials = _wants_credentials and not _is_wildcard
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins.split(",") if o.strip()],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

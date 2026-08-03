@@ -15,6 +15,11 @@ Config (all optional, sensible defaults):
     GROQ_RETRY_ATTEMPTS          - default: 3
     GROQ_RETRY_DELAY_SECONDS     - default: 3
     GROQ_MAX_RETRY_DELAY_SECONDS - cap on backoff, default: 60
+
+`call_groq()` also accepts an explicit `api_key` argument, which takes
+priority over the GROQ_API_KEY env var. This is what llm_router.py uses to
+rotate across multiple keys without mutating global env state (important
+since FastAPI can process requests concurrently).
 """
 
 import os
@@ -66,6 +71,7 @@ def generate_from_state(state: dict) -> str:
         conversation_text=state["conversation_text"],
         model=model,
         temperature=temperature,
+        api_key=state.get("api_key"),
     )
 
 
@@ -74,20 +80,24 @@ def call_groq(
     conversation_text: str,
     model: str | None = None,
     temperature: float = 0.0,
+    api_key: str | None = None,
 ) -> str:
     """A single Groq chat completion call with retry/backoff.
+
+    `api_key` takes priority over GROQ_API_KEY if provided — lets callers
+    (e.g. llm_router.py) rotate across multiple keys without touching
+    os.environ, which would race under concurrent requests.
 
     Backoff honors the Retry-After header when Groq sends one (capped by
     GROQ_MAX_RETRY_DELAY_SECONDS). A hard daily-cap 429 fails fast with a
     clear QuotaExceededError — retrying cannot reset a daily window.
     """
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
+    resolved_key = api_key or os.environ.get("GROQ_API_KEY")
+    if not resolved_key:
         raise RuntimeError(
-            "GROQ_API_KEY is not set — add it to the environment to use Groq "
-            "as the LLM provider."
+            "No Groq API key available — pass api_key= or set GROQ_API_KEY."
         )
-    client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+    client = OpenAI(api_key=resolved_key, base_url="https://api.groq.com/openai/v1")
     model = model or os.environ.get("GROQ_MODEL") or DEFAULT_MODEL
     retry_attempts = int(os.environ.get("GROQ_RETRY_ATTEMPTS", "3"))
     retry_delay = float(os.environ.get("GROQ_RETRY_DELAY_SECONDS", "3"))

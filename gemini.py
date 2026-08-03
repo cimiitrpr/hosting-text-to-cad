@@ -16,6 +16,11 @@ Config (all optional, sensible defaults):
     GEMINI_RETRY_ATTEMPTS           - default: 3
     GEMINI_RETRY_DELAY_SECONDS      - default: 3
     GEMINI_MAX_RETRY_DELAY_SECONDS  - cap on backoff, default: 60
+
+`call_gemini()` also accepts an explicit `api_key` argument, which takes
+priority over the GEMINI_API_KEY env var. This is what llm_router.py uses to
+rotate across multiple keys/projects without mutating global env state
+(important since FastAPI can process requests concurrently).
 """
 
 import os
@@ -35,7 +40,7 @@ _RETRY_DELAY_RE = re.compile(r'"retryDelay"\s*:\s*"([\d.]+)s"')
 
 
 class QuotaExceededError(RuntimeError):
-    """Gemini request quota exhausted (free tier is ~20 requests/day per model)."""
+    """Gemini request quota exhausted (free tier is a small number of requests/day per key/model)."""
 
 
 # Server-side errors that resolve on their own in seconds and are worth
@@ -76,6 +81,7 @@ def generate_from_state(state: dict) -> str:
         conversation_text=state["conversation_text"],
         model=model,
         temperature=temperature,
+        api_key=state.get("api_key"),
     )
 
 
@@ -84,15 +90,25 @@ def call_gemini(
     conversation_text: str,
     model: str | None = None,
     temperature: float = 0.0,
+    api_key: str | None = None,
 ) -> str:
     """A single Gemini generate_content call with retry/backoff on
     transient server errors (e.g. Gemini's 503 'high demand' response).
+
+    `api_key` takes priority over GEMINI_API_KEY if provided — lets callers
+    (e.g. llm_router.py) rotate across multiple keys without touching
+    os.environ, which would race under concurrent requests.
 
     Backoff honors the RetryInfo.retryDelay Google returns when present
     (capped by GEMINI_MAX_RETRY_DELAY_SECONDS). Quota exhaustion is treated
     as non-retryable: the daily free-tier quota will not reset in seconds,
     so we fail fast with a clear QuotaExceededError."""
-    client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    resolved_key = api_key or os.environ.get("GEMINI_API_KEY")
+    if not resolved_key:
+        raise RuntimeError(
+            "No Gemini API key available — pass api_key= or set GEMINI_API_KEY."
+        )
+    client = genai.Client(api_key=resolved_key)
     model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
     retry_attempts = int(os.environ.get("GEMINI_RETRY_ATTEMPTS", "3"))
     retry_delay = float(os.environ.get("GEMINI_RETRY_DELAY_SECONDS", "3"))
@@ -115,6 +131,8 @@ def call_gemini(
             if _is_quota(e):
                 raise QuotaExceededError(_quota_message(e, model))
             if _is_transient(e) and attempt < retry_attempts - 1:
+                delay = min(_retry_delay_seconds(e) or retry_delay, max_retry_delay)
+                time.sleep(delay)
                 continue
             raise
 
@@ -144,7 +162,7 @@ def _retry_delay_seconds(err: Exception) -> float | None:
 def _quota_message(err: Exception, model: str) -> str:
     return (
         f"Gemini quota exceeded for model '{model}' (the free tier allows a "
-        f"small number of requests per day, e.g. 20 generate_content calls). "
-        f"Use a paid plan / your own billing project, switch GEMINI_MODEL, or "
+        f"limited number of requests per day per key/project). "
+        f"Use a paid plan / a different key, switch GEMINI_MODEL, or "
         f"wait for the quota to reset. Provider response: {err}"
     )

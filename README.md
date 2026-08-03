@@ -13,6 +13,7 @@ source .venv/Scripts/activate
 (also make a .env file with - GEMINI_API_KEY=your_key_here  
                               LLM_PROVIDER=gemini)
 pip install -r requirements.txt
+export LLM_PROVIDER=gemini
 export GEMINI_API_KEY=your_key_here      # or: export LLM_PROVIDER=groq; export GROQ_API_KEY=...
 python main.py
 ```

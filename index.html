@@ -54,16 +54,20 @@
     </div>
 
     <script>
-       // Backend URL — no longer hardcoded. Resolution order:
-    //   1. window.APP_CONFIG.BACKEND_URL  (set in your deployment before this script)
-    //   2. ?backend=https://your-backend  query parameter
-    //   3. same origin the page was served from (works when the backend
-    //      also serves index.html)
-    window.APP_CONFIG = { BACKEND_URL: "https://hosting-text-to-cad.onrender.com" };
-    const BACKEND_URL = (window.APP_CONFIG.BACKEND_URL
-        || new URLSearchParams(window.location.search).get('backend')
-        || window.location.origin
-    ).replace(/\/+$/, '');
+       // Backend URL resolution order:
+       //   1. window.APP_CONFIG.BACKEND_URL — set this ONLY if you need to
+       //      force a specific backend regardless of where this page is
+       //      served from (e.g. testing the prod frontend against the prod
+       //      backend from localhost). Leave it empty/unset for normal use
+       //      so same-origin and ?backend= below can do their job.
+       //   2. ?backend=https://your-backend  query parameter
+       //   3. same origin the page was served from (works when the backend
+       //      also serves index.html, which is the normal deployment mode)
+       window.APP_CONFIG = window.APP_CONFIG || { BACKEND_URL: "" };
+       const BACKEND_URL = (window.APP_CONFIG.BACKEND_URL
+           || new URLSearchParams(window.location.search).get('backend')
+           || window.location.origin
+       ).replace(/\/+$/, '');
         let scene, camera, renderer, controls, currentMesh;
         const container = document.getElementById('canvasContainer');
         let sessionId = localStorage.getItem('cim_session_id') || null;
